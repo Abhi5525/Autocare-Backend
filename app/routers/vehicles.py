@@ -1,0 +1,386 @@
+# app/routers/vehicles.py
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Query
+from sqlmodel import Session, select
+from typing import List, Optional
+import os
+
+from app.core.database import get_session
+from app.dependencies.deps import get_current_user, get_current_owner
+from app.models.user import User
+from app.models.vehicle import Vehicle, VehicleCreate, VehicleUpdate, VehicleType, FuelType, TransmissionType
+from app.models.vehicle_photo import VehiclePhoto, VehiclePhotoCreate
+from app.services.upload_service import UploadService, UPLOAD_DIRS
+from app.services.qr_service import QRService
+
+router = APIRouter(prefix="/api/vehicles", tags=["Vehicles"])
+
+@router.post("/", response_model=Vehicle, status_code=status.HTTP_201_CREATED)
+async def create_vehicle(
+    vehicle_data: VehicleCreate,
+    current_user: User = Depends(get_current_owner),
+    db: Session = Depends(get_session)
+):
+    """
+    Create a new vehicle (for vehicle owners)
+    """
+    # Check if vehicle with same registration already exists
+    existing = db.exec(
+        select(Vehicle).where(Vehicle.registration_number == vehicle_data.registration_number)
+    ).first()
+    
+    if existing:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Vehicle with this registration number already exists"
+        )
+    
+    # Create vehicle with authenticated user as owner
+    vehicle = Vehicle(**vehicle_data.dict(), owner_id=current_user.id)
+    
+    db.add(vehicle)
+    db.commit()
+    db.refresh(vehicle)
+    
+    # Generate QR code
+    qr_url = QRService.generate_vehicle_qr(vehicle.id, vehicle.registration_number)
+    vehicle.qr_code_url = qr_url
+    
+    db.add(vehicle)
+    db.commit()
+    db.refresh(vehicle)
+    
+    return vehicle
+
+@router.get("/my-vehicles", response_model=List[Vehicle])
+async def get_my_vehicles(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+    skip: int = 0,
+    limit: int = 100,
+    vehicle_type: Optional[VehicleType] = None,
+    make: Optional[str] = None
+):
+    """
+    Get all vehicles for the current user with optional filters
+    """
+    query = select(Vehicle).where(Vehicle.owner_id == current_user.id)
+    
+    # Apply filters
+    if vehicle_type:
+        query = query.where(Vehicle.vehicle_type == vehicle_type)
+    
+    if make:
+        query = query.where(Vehicle.make.ilike(f"%{make}%"))
+    
+    # Order by creation date (newest first)
+    query = query.order_by(Vehicle.created_at.desc())
+    
+    # Apply pagination
+    query = query.offset(skip).limit(limit)
+    
+    vehicles = db.exec(query).all()
+    return vehicles
+
+@router.get("/{vehicle_id}", response_model=Vehicle)
+async def get_vehicle(
+    vehicle_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session)
+):
+    """
+    Get specific vehicle by ID
+    """
+    vehicle = db.get(Vehicle, vehicle_id)
+    
+    if not vehicle:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Vehicle not found"
+        )
+    
+    # Check if user owns this vehicle or is admin/mechanic
+    if vehicle.owner_id != current_user.id and current_user.role not in ["admin", "mechanic"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You don't have permission to access this vehicle"
+        )
+    
+    return vehicle
+
+@router.get("/registration/{registration}", response_model=Vehicle)
+async def get_vehicle_by_registration(
+    registration: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session)
+):
+    """
+    Get vehicle by registration number
+    """
+    vehicle = db.exec(
+        select(Vehicle).where(Vehicle.registration_number == registration)
+    ).first()
+    
+    if not vehicle:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Vehicle not found"
+        )
+    
+    # Check permissions
+    if vehicle.owner_id != current_user.id and current_user.role not in ["admin", "mechanic"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You don't have permission to access this vehicle"
+        )
+    
+    return vehicle
+
+@router.put("/{vehicle_id}", response_model=Vehicle)
+async def update_vehicle(
+    vehicle_id: int,
+    vehicle_update: VehicleUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session)
+):
+    """
+    Update vehicle details
+    """
+    vehicle = db.get(Vehicle, vehicle_id)
+    
+    if not vehicle:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Vehicle not found"
+        )
+    
+    # Check ownership
+    if vehicle.owner_id != current_user.id and current_user.role not in ["admin", "mechanic"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You don't have permission to update this vehicle"
+        )
+    
+    # Update fields
+    update_data = vehicle_update.dict(exclude_unset=True)
+    for field, value in update_data.items():
+        if value is not None:
+            setattr(vehicle, field, value)
+    
+    db.add(vehicle)
+    db.commit()
+    db.refresh(vehicle)
+    
+    return vehicle
+
+@router.delete("/{vehicle_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_vehicle(
+    vehicle_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session)
+):
+    """
+    Delete a vehicle (soft delete - just mark as inactive)
+    """
+    vehicle = db.get(Vehicle, vehicle_id)
+    
+    if not vehicle:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Vehicle not found"
+        )
+    
+    # Check ownership
+    if vehicle.owner_id != current_user.id and current_user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You don't have permission to delete this vehicle"
+        )
+    
+    # For now, just delete (later we can implement soft delete)
+    db.delete(vehicle)
+    db.commit()
+    
+    return None
+
+@router.post("/{vehicle_id}/photos", response_model=VehiclePhoto)
+async def upload_vehicle_photo(
+    vehicle_id: int,
+    file: UploadFile = File(...),
+    caption: Optional[str] = None,
+    is_primary: bool = False,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session)
+):
+    """
+    Upload a photo for a vehicle
+    """
+    # Get vehicle
+    vehicle = db.get(Vehicle, vehicle_id)
+    
+    if not vehicle:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Vehicle not found"
+        )
+    
+    # Check ownership
+    if vehicle.owner_id != current_user.id and current_user.role not in ["admin", "mechanic"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You don't have permission to upload photos for this vehicle"
+        )
+    
+    # Validate and process image
+    upload_service = UploadService()
+    image, file_ext = upload_service.validate_image(file)
+    
+    # Save image
+    filename = upload_service.save_image(
+        image, 
+        file_ext, 
+        UPLOAD_DIRS["vehicles"]
+    )
+    
+    # Create photo record
+    photo = VehiclePhoto(
+        vehicle_id=vehicle_id,
+        photo_url=f"/uploads/vehicles/{filename}",
+        uploaded_by=current_user.id,
+        caption=caption,
+        is_primary=is_primary,
+        file_size=len(file.file.read()),
+        file_type=file.content_type or "image/jpeg",
+        width=image.width,
+        height=image.height
+    )
+    
+    # If this is primary, unset other primary photos
+    if is_primary:
+        # Get existing primary photo
+        existing_primary = db.exec(
+            select(VehiclePhoto).where(
+                VehiclePhoto.vehicle_id == vehicle_id,
+                VehiclePhoto.is_primary == True
+            )
+        ).first()
+        
+        if existing_primary:
+            existing_primary.is_primary = False
+            db.add(existing_primary)
+    
+    db.add(photo)
+    db.commit()
+    db.refresh(photo)
+    
+    # Update vehicle's primary photo if this is primary
+    if is_primary and not vehicle.primary_photo_url:
+        vehicle.primary_photo_url = photo.photo_url
+        db.add(vehicle)
+        db.commit()
+    
+    return photo
+
+@router.get("/{vehicle_id}/photos", response_model=List[VehiclePhoto])
+async def get_vehicle_photos(
+    vehicle_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session)
+):
+    """
+    Get all photos for a vehicle
+    """
+    # Get vehicle
+    vehicle = db.get(Vehicle, vehicle_id)
+    
+    if not vehicle:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Vehicle not found"
+        )
+    
+    # Check ownership
+    if vehicle.owner_id != current_user.id and current_user.role not in ["admin", "mechanic"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You don't have permission to view photos for this vehicle"
+        )
+    
+    photos = db.exec(
+        select(VehiclePhoto)
+        .where(VehiclePhoto.vehicle_id == vehicle_id)
+        .order_by(VehiclePhoto.is_primary.desc(), VehiclePhoto.uploaded_at.desc())
+    ).all()
+    
+    return photos
+
+@router.get("/{vehicle_id}/qr")
+async def get_vehicle_qr(
+    vehicle_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session)
+):
+    """
+    Get vehicle QR code (regenerate if missing)
+    """
+    vehicle = db.get(Vehicle, vehicle_id)
+    
+    if not vehicle:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Vehicle not found"
+        )
+    
+    # Check ownership
+    if vehicle.owner_id != current_user.id and current_user.role not in ["admin", "mechanic"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You don't have permission to access this vehicle's QR code"
+        )
+    
+    # Generate QR if not exists
+    if not vehicle.qr_code_url or not os.path.exists(vehicle.qr_code_url.replace("/uploads/", "app/uploads/")):
+        qr_url = QRService.generate_vehicle_qr(vehicle.id, vehicle.registration_number)
+        vehicle.qr_code_url = qr_url
+        db.add(vehicle)
+        db.commit()
+    
+    return {
+        "qr_code_url": vehicle.qr_code_url,
+        "vehicle_id": vehicle.id,
+        "registration": vehicle.registration_number
+    }
+
+@router.post("/scan-qr")
+async def scan_vehicle_qr(
+    qr_data: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session)
+):
+    """
+    Scan QR code to get vehicle information
+    """
+    parsed = QRService.parse_qr_data(qr_data)
+    
+    if not parsed or parsed["type"] != "vehicle":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid QR code"
+        )
+    
+    vehicle = db.get(Vehicle, parsed["vehicle_id"])
+    
+    if not vehicle:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Vehicle not found"
+        )
+    
+    # Mechanics and admins can scan any vehicle
+    # Owners can only scan their own vehicles
+    if vehicle.owner_id != current_user.id and current_user.role not in ["admin", "mechanic"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You don't have permission to access this vehicle"
+        )
+    
+    return vehicle
