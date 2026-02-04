@@ -87,7 +87,7 @@ def test_service_workflow():
         print(f"   ✅ Service retrieved:")
         print(f"   - Type: {service_details['service_type']}")
         print(f"   - Status: {service_details['status']}")
-        print(f"   - Estimate: ₹{service_details['cost_estimate']}")
+        print(f"   - Estimate: Rs{service_details['cost_estimate']}")
         print(f"   - Date: {service_details['service_date']}")
     else:
         print(f"   ❌ Failed to retrieve service: {response.text}")
@@ -107,7 +107,7 @@ def test_service_workflow():
         completed_service = response.json()
         print(f"   ✅ Service completed!")
         print(f"   - Final Status: {completed_service['status']}")
-        print(f"   - Final Cost: ₹{completed_service.get('final_cost', 'N/A')}")
+        print(f"   - Final Cost: Rs{completed_service.get('final_cost', 'N/A')}")
         print(f"   - Completion Date: {completed_service.get('completion_date', 'N/A')}")
     else:
         print(f"   ❌ Failed to complete service: {response.text}")
@@ -151,7 +151,7 @@ def test_service_parts():
         "vehicle_id": vehicle_id,
         "service_type": "regular_service",
         "description": "Oil change with filter replacement",
-        "service_notes": "Parts used: Engine Oil (5L) - ₹800, Oil Filter - ₹300, Air Filter - ₹250. Labor: ₹500. Total parts cost: ₹1350, Total service: ₹1850",
+        "service_notes": "Parts used: Engine Oil (5L) - Rs800, Oil Filter - Rs300, Air Filter - Rs250. Labor: Rs500. Total parts cost: Rs1350, Total service: Rs1850",
         "cost_estimate": 1850.0,
         "service_date": "2026-02-01"
     }
@@ -162,7 +162,7 @@ def test_service_parts():
         service = response.json()
         print(f"   ✅ Service with parts created: ID {service['id']}")
         print(f"   - Description: {service['description']}")
-        print(f"   - Cost: ₹{service['cost_estimate']}")
+        print(f"   - Cost: Rs{service['cost_estimate']}")
     else:
         print(f"   ❌ Failed to create service with parts: {response.text}")
 

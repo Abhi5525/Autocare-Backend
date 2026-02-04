@@ -127,7 +127,7 @@ def test_services():
         print(f"   ✅ Service record created!")
         print(f"   Service ID: {service_id}")
         print(f"   Description: {service['description']}")
-        print(f"   Cost Estimate: ₹{service['cost_estimate']}")
+        print(f"   Cost Estimate: Rs{service['cost_estimate']}")
     else:
         print(f"   ❌ Error: {response.text[:200]}")
         return
@@ -195,7 +195,7 @@ def test_services():
         print(f"   ✅ Manual service created!")
         print(f"   Service ID: {service['id']}")
         print(f"   Status: {service['status']}")
-        print(f"   Cost: ₹{service['total_cost']}")
+        print(f"   Cost: Rs{service['total_cost']}")
     else:
         print(f"   ❌ Error: {response.text[:200]}")
     
@@ -239,8 +239,8 @@ def test_services():
         stats = response.json()
         print(f"   ✅ Statistics retrieved")
         print(f"   Total services: {stats['total_services']}")
-        print(f"   Total revenue: ₹{stats['total_revenue']}")
-        print(f"   Avg cost: ₹{stats['average_service_cost']}")
+        print(f"   Total revenue: Rs{stats['total_revenue']}")
+        print(f"   Avg cost: Rs{stats['average_service_cost']}")
     else:
         print(f"   ❌ Error: {response.text[:200]}")
     

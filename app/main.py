@@ -6,7 +6,7 @@ import os
 from datetime import datetime
 from app.core.database import create_db_and_tables, drop_and_recreate_tables
 from app.core.config import settings
-from app.routers import auth, vehicles, services  # Add services
+from app.routers import auth, vehicles, services, vehicle_access  # Add vehicle_access
 
 # Create FastAPI app
 app = FastAPI(
@@ -47,6 +47,7 @@ def on_startup():
 app.include_router(auth.router)
 app.include_router(vehicles.router)
 app.include_router(services.router)  # Add this line
+app.include_router(vehicle_access.router)  # Add vehicle access router
 
 # Root endpoint
 @app.get("/")

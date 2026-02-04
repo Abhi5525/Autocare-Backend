@@ -168,7 +168,7 @@ def test_voice_processing():
             print(f"   Service Type: {parsed.get('service_type', 'N/A')}")
             print(f"   Parts Found: {len(parsed.get('parts_replaced', []))} replaced, "
                   f"{len(parsed.get('parts_repaired', []))} repaired")
-            print(f"   Estimated Cost: ₹{parsed.get('total_cost', 0)}")
+            print(f"   Estimated Cost: Rs{parsed.get('total_cost', 0)}")
             print(f"   Odometer: {parsed.get('odometer_reading', 'N/A')}")
             
             created_drafts.append({
@@ -194,7 +194,7 @@ def test_voice_processing():
         for draft in drafts[:5]:  # Show first 5
             print(f"   - ID {draft['id']}: {draft.get('description', 'No description')[:60]}...")
             print(f"     Status: {draft['status']}, Voice: {draft.get('voice_transcript') is not None}")
-            print(f"     Cost: ₹{draft.get('cost_estimate', 0)}, "
+            print(f"     Cost: Rs{draft.get('cost_estimate', 0)}, "
                   f"Confidence: {draft.get('confidence_score', 0):.2f}")
     else:
         print(f"   ❌ Error: {response.text[:200]}")
@@ -236,7 +236,7 @@ def test_voice_processing():
             updated = response.json()
             print(f"   ✅ Draft updated")
             print(f"   New summary: {updated.get('work_summary', 'N/A')[:80]}...")
-            print(f"   New total cost: ₹{updated.get('total_cost', 0)}")
+            print(f"   New total cost: Rs{updated.get('total_cost', 0)}")
         else:
             print(f"   ❌ Error: {response.text[:200]}")
     
@@ -293,8 +293,8 @@ def test_voice_processing():
             print(f"   Found parts: {found_parts}")
             print(f"   Expected parts: {test_case['expected_parts']}")
             print(f"   Parts accuracy: {parts_accuracy:.0%}")
-            print(f"   Found cost: ₹{parsed.get('total_cost', 0)}")
-            print(f"   Expected cost: ₹{test_case['expected_cost']}")
+            print(f"   Found cost: Rs{parsed.get('total_cost', 0)}")
+            print(f"   Expected cost: Rs{test_case['expected_cost']}")
             print(f"   Cost accuracy: {'✓' if cost_accuracy else '✗'}")
         else:
             print(f"   ❌ Parsing failed")
@@ -338,7 +338,7 @@ def test_voice_processing():
                 avg_confidence = sum(d.get('processing_confidence', 0) for d in voice_drafts) / len(voice_drafts)
                 avg_cost = sum(d.get('total_cost', 0) for d in voice_drafts) / len(voice_drafts)
                 print(f"   Avg confidence: {avg_confidence:.2f}")
-                print(f"   Avg cost: ₹{avg_cost:.2f}")
+                print(f"   Avg cost: Rs{avg_cost:.2f}")
     
     print("\n" + "=" * 60)
     print("✅ Voice Processing Tests Complete!")

@@ -137,7 +137,7 @@ def test_service_update():
         print(f"   ✅ Service updated successfully!")
         print(f"   Service ID: {service['id']}")
         print(f"   Status: {service['status']}")
-        print(f"   Final Cost: ₹{service.get('final_cost', 'N/A')}")
+        print(f"   Final Cost: Rs{service.get('final_cost', 'N/A')}")
     else:
         print(f"   ❌ Error: {response.text}")
 

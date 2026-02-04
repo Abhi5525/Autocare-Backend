@@ -24,7 +24,7 @@ class UserBase(SQLModel):
 # ===== Pydantic Models for API =====
 class UserCreate(UserBase):
     """For user registration"""
-    password: constr(min_length=8, max_length=72)
+    password: str = Field(min_length=8, max_length=72)
     role: str = "owner"  # Default role
 
 class UserUpdate(SQLModel):

@@ -193,7 +193,7 @@ def test_approval_workflow():
         print(f"   ✅ Draft retrieved")
         print(f"   Status: {draft_details['status']}")
         print(f"   Work: {draft_details.get('description', 'N/A')}")
-        print(f"   Cost: ₹{draft_details.get('cost_estimate', 0)}")
+        print(f"   Cost: Rs{draft_details.get('cost_estimate', 0)}")
     else:
         print(f"   ❌ Error: {response.text[:200]}")
     
@@ -238,7 +238,7 @@ def test_approval_workflow():
             print(f"   Latest approved:")
             print(f"     ID: {latest['id']}")
             print(f"     Vehicle: {latest.get('vehicle_id')}")
-            print(f"     Cost: ₹{latest.get('cost_estimate', 0)}")
+            print(f"     Cost: Rs{latest.get('cost_estimate', 0)}")
             print(f"     Date: {latest.get('service_date')}")
     
     # Step 5: Test reject workflow

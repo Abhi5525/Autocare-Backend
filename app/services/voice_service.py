@@ -274,13 +274,13 @@ class VoiceProcessingService:
         
         # Compile cost patterns
         compiled['cost'] = [
-            re.compile(r'total\s*[:\-]?\s*[₹$]?\s*(\d+(?:\.\d+)?)', re.IGNORECASE),
-            re.compile(r'[₹$]\s*(\d+(?:\.\d+)?)\s*(?:in total|total|altogether)', re.IGNORECASE),
-            re.compile(r'cost\s*(?:is|of|was)?\s*[:\-]?\s*[₹$]?\s*(\d+(?:\.\d+)?)', re.IGNORECASE),
-            re.compile(r'(\d+(?:\.\d+)?)\s*(?:rs|rupees|₹|inr)\s*(?:in total|total)?', re.IGNORECASE),
-            re.compile(r'[₹$]\s*(\d+(?:\.\d+)?)', re.IGNORECASE),
-            re.compile(r'charged\s*[₹$]?\s*(\d+(?:\.\d+)?)', re.IGNORECASE),
-            re.compile(r'bill\s*(?:of|for)?\s*[₹$]?\s*(\d+(?:\.\d+)?)', re.IGNORECASE),
+            re.compile(r'total\s*[:\-]?\s*[Rs$]?\s*(\d+(?:\.\d+)?)', re.IGNORECASE),
+            re.compile(r'[Rs$]\s*(\d+(?:\.\d+)?)\s*(?:in total|total|altogether)', re.IGNORECASE),
+            re.compile(r'cost\s*(?:is|of|was)?\s*[:\-]?\s*[Rs$]?\s*(\d+(?:\.\d+)?)', re.IGNORECASE),
+            re.compile(r'(\d+(?:\.\d+)?)\s*(?:rs|rupees|Rs|inr)\s*(?:in total|total)?', re.IGNORECASE),
+            re.compile(r'[Rs$]\s*(\d+(?:\.\d+)?)', re.IGNORECASE),
+            re.compile(r'charged\s*[Rs$]?\s*(\d+(?:\.\d+)?)', re.IGNORECASE),
+            re.compile(r'bill\s*(?:of|for)?\s*[Rs$]?\s*(\d+(?:\.\d+)?)', re.IGNORECASE),
             re.compile(r'(\d+)\s*(?:rupees|rs|rp)', re.IGNORECASE),
         ]
         
@@ -411,7 +411,7 @@ class VoiceProcessingService:
             ' km ': ' kilometers ',
             ' kms ': ' kilometers ',
             ' rs ': ' rupees ',
-            ' ₹': ' rupees ',
+            ' Rs': ' rupees ',
             'inr ': 'rupees ',
         }
         
@@ -480,10 +480,10 @@ class VoiceProcessingService:
         
         # Pattern for comma-separated lists after "with" or "including"
         list_patterns = [
-            r'(?:with|including)\s+(.+?)(?:\.|for|at|₹|$)',
-            r'(?:replaced|changed)\s+(.+?)(?:\.|for|at|₹|$)',
-            r'full service\s+(?:with\s+)?(.+?)(?:\.|for|at|₹|$)',
-            r'service\s+(?:with\s+)?(.+?)(?:\.|for|at|₹|$)',
+            r'(?:with|including)\s+(.+?)(?:\.|for|at|Rs|$)',
+            r'(?:replaced|changed)\s+(.+?)(?:\.|for|at|Rs|$)',
+            r'full service\s+(?:with\s+)?(.+?)(?:\.|for|at|Rs|$)',
+            r'service\s+(?:with\s+)?(.+?)(?:\.|for|at|Rs|$)',
         ]
         
         for pattern in list_patterns:
@@ -675,9 +675,9 @@ class VoiceProcessingService:
         
         for keyword in keywords:
             patterns = [
-                rf'{keyword}\s*(?:cost|charge|fee)?\s*[:\-]?\s*[₹$]?\s*(\d+(?:\.\d+)?)',
-                rf'[₹$]\s*(\d+(?:\.\d+)?)\s*(?:for|on)\s*{keyword}',
-                rf'{keyword}\s*[₹$]\s*(\d+(?:\.\d+)?)',
+                rf'{keyword}\s*(?:cost|charge|fee)?\s*[:\-]?\s*[Rs$]?\s*(\d+(?:\.\d+)?)',
+                rf'[Rs$]\s*(\d+(?:\.\d+)?)\s*(?:for|on)\s*{keyword}',
+                rf'{keyword}\s*[Rs$]\s*(\d+(?:\.\d+)?)',
             ]
             
             for pattern in patterns:
@@ -702,7 +702,7 @@ class VoiceProcessingService:
                 try:
                     amount = float(match.replace(',', ''))
                     # Heuristic: filter unreasonable amounts
-                    if 10 <= amount <= 1000000:  # Between ₹10 and ₹1,000,000
+                    if 10 <= amount <= 1000000:  # Between Rs10 and Rs1,000,000
                         all_amounts.append(amount)
                 except (ValueError, AttributeError):
                     continue
@@ -801,7 +801,7 @@ class VoiceProcessingService:
             summary = f"{service_name}. " + ". ".join(summary_parts)
             
             if total_cost > 0:
-                summary += f" Total cost: ₹{total_cost:.2f}"
+                summary += f" Total cost: Rs{total_cost:.2f}"
             
             return summary
         
@@ -820,7 +820,7 @@ class VoiceProcessingService:
             repair_cost = part['estimated_price'] * 0.5 * part.get('quantity', 1)
             total += repair_cost
         
-        # Add labor cost if not specified (30% of parts cost, minimum ₹500)
+        # Add labor cost if not specified (30% of parts cost, minimum Rs500)
         if labor_cost == 0 and total > 0:
             labor_estimate = max(total * 0.3, 500)
             total += labor_estimate
@@ -948,8 +948,8 @@ if __name__ == "__main__":
             accuracy = 100 if not found_set else 0
         
         print(f"   Parts accuracy: {accuracy:.1f}%")
-        print(f"   Found cost: ₹{result['total_cost']}")
-        print(f"   Expected cost: ₹{test['expected_cost']}")
+        print(f"   Found cost: Rs{result['total_cost']}")
+        print(f"   Expected cost: Rs{test['expected_cost']}")
         print(f"   Cost accuracy: {'✓' if abs(result['total_cost'] - test['expected_cost']) < 0.01 else '✗'}")
         print(f"   Confidence: {result['confidence_score']:.2f}")
         

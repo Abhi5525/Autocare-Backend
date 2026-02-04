@@ -43,7 +43,7 @@ def test_improved_parser():
         
         print(f"   Confidence: {result['confidence_score']:.2f}")
         print(f"   Service Type: {result['service_type']}")
-        print(f"   Total Cost: ₹{result['total_cost']}")
+        print(f"   Total Cost: Rs{result['total_cost']}")
         print(f"   Odometer: {result['odometer_reading']}")
         
         found_parts = [p['name'] for p in result['parts_replaced']]
@@ -85,7 +85,7 @@ def test_improved_parser():
         result = service.process_transcript(transcript)
         print(f"   Confidence: {result['confidence_score']:.2f}")
         print(f"   Parts Found: {len(result['parts_replaced'])}")
-        print(f"   Cost: ₹{result['total_cost']}")
+        print(f"   Cost: Rs{result['total_cost']}")
 
 if __name__ == "__main__":
     test_improved_parser()

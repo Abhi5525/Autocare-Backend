@@ -24,6 +24,31 @@ voice_service = VoiceProcessingService()
 
 # ===== SERVICE RECORDS =====
 
+@router.get("/", response_model=List[ServiceRecordResponse])
+async def list_all_services(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+    skip: int = 0,
+    limit: int = 100
+):
+    """
+    Get all service records (filtered by user role)
+    """
+    query = select(ServiceRecord)
+    
+    # Filter by role
+    if current_user.role == "owner":
+        # Owners see services for their vehicles
+        query = query.join(Vehicle).where(Vehicle.owner_id == current_user.id)
+    elif current_user.role == "mechanic":
+        # Mechanics see services they created
+        query = query.where(ServiceRecord.mechanic_id == current_user.id)
+    # Admins see everything
+    
+    query = query.order_by(ServiceRecord.created_at.desc()).offset(skip).limit(limit)
+    services = db.exec(query).all()
+    return services
+
 @router.post("/", response_model=ServiceRecordResponse, status_code=status.HTTP_201_CREATED)
 async def create_service_record(
     service_data: ServiceRecordCreate,
@@ -526,7 +551,7 @@ async def get_vehicle_service_history(
 
 # ===== STATISTICS =====
 
-@router.get("/stats/overview")
+@router.get("/statistics")
 async def get_service_statistics(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_session),
@@ -553,7 +578,7 @@ async def get_service_statistics(
     
     # Calculate statistics
     total_services = len(services)
-    total_revenue = sum(s.total_cost for s in services)
+    total_revenue = sum((s.final_cost or s.cost_estimate or 0) for s in services)
     avg_service_cost = total_revenue / total_services if total_services > 0 else 0
     
     # Count by service type
