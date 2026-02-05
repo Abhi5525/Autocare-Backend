@@ -27,6 +27,13 @@ class UserCreate(UserBase):
     password: str = Field(min_length=8, max_length=72)
     role: str = "owner"  # Default role
     
+    # Address fields (for all users)
+    address: Optional[str] = None
+    city: Optional[str] = None
+    state: Optional[str] = None
+    municipality: Optional[str] = None
+    ward_no: Optional[str] = None
+    
     # Mechanic-specific fields (required only for mechanics)
     citizen_number: Optional[str] = None
     garage_registration: Optional[str] = None
@@ -42,6 +49,9 @@ class UserUpdate(SQLModel):
     city: Optional[str] = None
     state: Optional[str] = None
     pincode: Optional[str] = None
+    municipality: Optional[str] = None
+    ward_no: Optional[str] = None
+    garage_address: Optional[str] = None
 
 class UserLogin(SQLModel):
     """For login"""
@@ -63,6 +73,12 @@ class Token(SQLModel):
     user_id: int
     role: str
 
+class TokenWithUser(SQLModel):
+    """Token response with full user data"""
+    access_token: str
+    token_type: str = "bearer"
+    user: "User"
+
 # ===== DB Model =====
 class User(UserBase, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
@@ -77,6 +93,8 @@ class User(UserBase, table=True):
     city: Optional[str] = None
     state: Optional[str] = None
     pincode: Optional[str] = None
+    municipality: Optional[str] = None
+    ward_no: Optional[str] = None
 
     # Mechanic-specific fields
     citizen_number: Optional[str] = Field(default=None, unique=True, index=True)  # National ID/Citizenship number

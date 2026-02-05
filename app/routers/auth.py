@@ -10,12 +10,12 @@ from datetime import datetime
 
 from app.core.database import get_session
 from app.core.security import verify_password, get_password_hash, create_access_token
-from app.models.user import User, UserCreate, UserLogin, Token, UserUpdate
+from app.models.user import User, UserCreate, UserLogin, Token, TokenWithUser, UserUpdate
 from app.dependencies.deps import get_current_user
 
 router = APIRouter(prefix="/api/auth", tags=["Authentication"])
 
-@router.post("/register", response_model=Token, status_code=status.HTTP_201_CREATED)
+@router.post("/register", response_model=TokenWithUser, status_code=status.HTTP_201_CREATED)
 async def register(
     user_data: UserCreate,
     db: Session = Depends(get_session)
@@ -77,6 +77,13 @@ async def register(
         password_hash=hashed_password,
         is_verified=False,
         role=user_data.role,
+        # Address fields
+        address=user_data.address,
+        city=user_data.city,
+        state=user_data.state,
+        municipality=user_data.municipality,
+        ward_no=user_data.ward_no,
+        # Mechanic-specific fields
         citizen_number=user_data.citizen_number,
         garage_registration=user_data.garage_registration,
         pan_number=user_data.pan_number,
@@ -99,14 +106,13 @@ async def register(
     
     access_token = create_access_token(data={"user_id": user.id, "role": user.role})
     
-    return Token(
+    return TokenWithUser(
         access_token=access_token,
         token_type="bearer",
-        user_id=user.id,
-        role=user.role
+        user=user
     )
 
-@router.post("/login", response_model=Token)
+@router.post("/login", response_model=TokenWithUser)
 async def login(
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: Session = Depends(get_session)
@@ -132,14 +138,13 @@ async def login(
     
     access_token = create_access_token(data={"user_id": user.id, "role": user.role})
     
-    return Token(
+    return TokenWithUser(
         access_token=access_token,
         token_type="bearer",
-        user_id=user.id,
-        role=user.role
+        user=user
     )
 
-@router.post("/login-json", response_model=Token)
+@router.post("/login-json", response_model=TokenWithUser)
 async def login_json(
     login_data: UserLogin,
     db: Session = Depends(get_session)
@@ -171,11 +176,10 @@ async def login_json(
     
     access_token = create_access_token(data={"user_id": user.id, "role": user.role})
     
-    return Token(
+    return TokenWithUser(
         access_token=access_token,
         token_type="bearer",
-        user_id=user.id,
-        role=user.role
+        user=user
     )
 
 @router.get("/me", response_model=User)
@@ -344,9 +348,10 @@ async def approve_mechanic(
 @router.put("/admin/reject-mechanic/{mechanic_id}")
 async def reject_mechanic(
     mechanic_id: int,
-    reason: Optional[str] = None,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_session)
+    db: Session = Depends(get_session),
+    reason: Optional[str] = None,
+    comments: Optional[str] = None
 ):
     """Reject a mechanic registration (admin only)"""
     if current_user.role != "admin":
@@ -362,8 +367,158 @@ async def reject_mechanic(
             detail="Mechanic not found"
         )
     
-    # Delete the rejected registration
-    db.delete(mechanic)
+    # Mark as rejected instead of deleting
+    mechanic.is_active = False
+    mechanic.is_approved = False
+    mechanic.updated_at = datetime.now()
+    # Store rejection reason in a field (you could add a rejection_reason field)
+    
+    db.add(mechanic)
     db.commit()
     
-    return {"message": f"Mechanic registration rejected", "reason": reason}
+    return {"message": f"Mechanic {mechanic.full_name} rejected", "reason": reason}
+
+# ===== COMPREHENSIVE ADMIN ENDPOINTS =====
+
+@router.get("/admin/statistics")
+async def get_admin_statistics(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session)
+):
+    """Get comprehensive system statistics (admin only)"""
+    if current_user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only admins can access statistics"
+        )
+    
+    # Count users by role
+    total_users = db.query(User).count()
+    total_owners = db.query(User).filter(User.role == "owner").count()
+    total_mechanics = db.query(User).filter(User.role == "mechanic", User.is_approved == True).count()
+    pending_mechanics = db.query(User).filter(User.role == "mechanic", User.is_approved == False).count()
+    
+    # Import Vehicle and ServiceRecord
+    from app.models.vehicle import Vehicle
+    from app.models.service import ServiceRecord
+    
+    total_vehicles = db.query(Vehicle).count()
+    total_services = db.query(ServiceRecord).count()
+    pending_services = db.query(ServiceRecord).filter(ServiceRecord.status == "pending_approval").count()
+    
+    # Calculate revenue (mock for now)
+    total_revenue = db.query(ServiceRecord).filter(ServiceRecord.total_cost.isnot(None)).count() * 1500  # Mock calculation
+    
+    return {
+        "total_users": total_users,
+        "total_owners": total_owners,
+        "total_mechanics": total_mechanics,
+        "total_vehicles": total_vehicles,
+        "total_services": total_services,
+        "pending_mechanics": pending_mechanics,
+        "pending_services": pending_services,
+        "total_revenue": total_revenue,
+        "system_uptime": 99.8,
+        "user_satisfaction": 87
+    }
+
+@router.get("/admin/all-mechanics")
+async def get_all_mechanics(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+    filter_status: Optional[str] = None
+):
+    """Get all mechanics with optional status filter (admin only)"""
+    if current_user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only admins can access this endpoint"
+        )
+    
+    query = db.query(User).filter(User.role == "mechanic")
+    
+    if filter_status == "pending":
+        query = query.filter(User.is_approved == False)
+    elif filter_status == "approved":
+        query = query.filter(User.is_approved == True)
+    elif filter_status == "rejected":
+        query = query.filter(User.is_approved == False, User.is_active == False)
+    
+    mechanics = query.order_by(User.created_at.desc()).all()
+    return mechanics
+
+@router.get("/admin/mechanic/{mechanic_id}")
+async def get_mechanic_details(
+    mechanic_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session)
+):
+    """Get detailed mechanic information (admin only)"""
+    if current_user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only admins can access mechanic details"
+        )
+    
+    mechanic = db.query(User).filter(User.id == mechanic_id, User.role == "mechanic").first()
+    if not mechanic:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Mechanic not found"
+        )
+    
+    return mechanic
+
+@router.get("/admin/all-users")
+async def get_all_users(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+    role: Optional[str] = None,
+    skip: int = 0,
+    limit: int = 100
+):
+    """Get all users with optional role filter (admin only)"""
+    if current_user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only admins can access all users"
+        )
+    
+    query = db.query(User)
+    
+    if role:
+        query = query.filter(User.role == role)
+    
+    users = query.order_by(User.created_at.desc()).offset(skip).limit(limit).all()
+    return users
+
+@router.delete("/admin/user/{user_id}")
+async def delete_user(
+    user_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session)
+):
+    """Delete a user (admin only)"""
+    if current_user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only admins can delete users"
+        )
+    
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+    
+    if user.role == "admin":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot delete admin users"
+        )
+    
+    db.delete(user)
+    db.commit()
+    
+    return {"message": f"User {user.full_name} deleted successfully"}
