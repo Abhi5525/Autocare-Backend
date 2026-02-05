@@ -87,7 +87,8 @@ class ServiceRecord(SQLModel, table=True):
         sa_relationship_kwargs={"foreign_keys": "ServiceRecord.mechanic_id"}
     )
     approver: Optional["User"] = Relationship(
-        sa_relationship_kwargs={"foreign_keys": "ServiceRecord.approver_id"}
+        back_populates="approved_services",
+        sa_relationship_kwargs={"foreign_keys": "ServiceRecord.approver_id" }
     )
     parts_used: List["ServicePart"] = Relationship(back_populates="service")
 

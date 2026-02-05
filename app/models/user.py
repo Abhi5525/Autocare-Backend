@@ -26,12 +26,22 @@ class UserCreate(UserBase):
     """For user registration"""
     password: str = Field(min_length=8, max_length=72)
     role: str = "owner"  # Default role
+    
+    # Mechanic-specific fields (required only for mechanics)
+    citizen_number: Optional[str] = None
+    garage_registration: Optional[str] = None
+    pan_number: Optional[str] = None
+    garage_address: Optional[str] = None
 
 class UserUpdate(SQLModel):
     """For updating user profile"""
     full_name: Optional[str] = None
     phone: Optional[str] = None
     profile_pic_url: Optional[str] = None
+    address: Optional[str] = None
+    city: Optional[str] = None
+    state: Optional[str] = None
+    pincode: Optional[str] = None
 
 class UserLogin(SQLModel):
     """For login"""
@@ -67,6 +77,16 @@ class User(UserBase, table=True):
     city: Optional[str] = None
     state: Optional[str] = None
     pincode: Optional[str] = None
+
+    # Mechanic-specific fields
+    citizen_number: Optional[str] = Field(default=None, unique=True, index=True)  # National ID/Citizenship number
+    garage_registration: Optional[str] = Field(default=None, unique=True, index=True)  # Garage registration number
+    pan_number: Optional[str] = Field(default=None, unique=True, index=True)  # PAN number for tax
+    mechanic_certificate_url: Optional[str] = None  # Photo/certificate upload
+    garage_address: Optional[str] = None  # Garage location
+    is_approved: bool = False  # Admin approval for mechanics
+    approved_by: Optional[int] = None  # Admin who approved
+    approved_at: Optional[datetime] = None  # When approved
 
     # Timestamps
     created_at: datetime = Field(default_factory=datetime.now)

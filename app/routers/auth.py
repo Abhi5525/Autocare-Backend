@@ -21,8 +21,10 @@ async def register(
     db: Session = Depends(get_session)
 ):
     """
-    Register a new user
+    Register a new user.
+    Mechanics require admin approval before they can use the system.
     """
+    # Check email and phone uniqueness
     existing_user = db.query(User).filter(
         (User.email == user_data.email) | (User.phone == user_data.phone)
     ).first()
@@ -33,6 +35,39 @@ async def register(
             detail="Email or phone already registered"
         )
     
+    # Validate mechanic-specific fields
+    if user_data.role == "mechanic":
+        if not all([user_data.citizen_number, user_data.garage_registration, 
+                   user_data.pan_number, user_data.garage_address]):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Mechanics must provide citizen number, garage registration, PAN number, and garage address"
+            )
+        
+        # Check for duplicate mechanic credentials
+        duplicate_mechanic = db.query(User).filter(
+            (User.citizen_number == user_data.citizen_number) |
+            (User.garage_registration == user_data.garage_registration) |
+            (User.pan_number == user_data.pan_number)
+        ).first()
+        
+        if duplicate_mechanic:
+            if duplicate_mechanic.citizen_number == user_data.citizen_number:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="This citizen number is already registered"
+                )
+            elif duplicate_mechanic.garage_registration == user_data.garage_registration:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="This garage registration number is already registered"
+                )
+            elif duplicate_mechanic.pan_number == user_data.pan_number:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="This PAN number is already registered"
+                )
+    
     hashed_password = get_password_hash(user_data.password)
 
     user = User(
@@ -41,12 +76,26 @@ async def register(
         full_name=user_data.full_name,
         password_hash=hashed_password,
         is_verified=False,
-        role=user_data.role
+        role=user_data.role,
+        citizen_number=user_data.citizen_number,
+        garage_registration=user_data.garage_registration,
+        pan_number=user_data.pan_number,
+        garage_address=user_data.garage_address,
+        # Mechanics need admin approval
+        is_active=True if user_data.role != "mechanic" else False,
+        is_approved=False
     )
     
     db.add(user)
     db.commit()
     db.refresh(user)
+    
+    # Don't create token for inactive mechanics
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_202_ACCEPTED,
+            detail="Your registration is pending admin approval. You will receive a notification once approved."
+        )
     
     access_token = create_access_token(data={"user_id": user.id, "role": user.role})
     
@@ -235,3 +284,86 @@ async def change_password(
     db.commit()
     
     return {"message": "Password changed successfully"}
+
+@router.get("/admin/pending-mechanics")
+async def get_pending_mechanics(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session)
+):
+    """Get all pending mechanic registrations (admin only)"""
+    if current_user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only admins can access this endpoint"
+        )
+    
+    pending_mechanics = db.query(User).filter(
+        User.role == "mechanic",
+        User.is_approved == False
+    ).all()
+    
+    return pending_mechanics
+
+@router.put("/admin/approve-mechanic/{mechanic_id}")
+async def approve_mechanic(
+    mechanic_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session)
+):
+    """Approve a mechanic registration (admin only)"""
+    if current_user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only admins can approve mechanics"
+        )
+    
+    mechanic = db.query(User).filter(User.id == mechanic_id).first()
+    if not mechanic:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Mechanic not found"
+        )
+    
+    if mechanic.role != "mechanic":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="User is not a mechanic"
+        )
+    
+    mechanic.is_approved = True
+    mechanic.is_active = True
+    mechanic.approved_by = current_user.id
+    mechanic.approved_at = datetime.now()
+    mechanic.updated_at = datetime.now()
+    
+    db.add(mechanic)
+    db.commit()
+    
+    return {"message": f"Mechanic {mechanic.full_name} approved successfully"}
+
+@router.put("/admin/reject-mechanic/{mechanic_id}")
+async def reject_mechanic(
+    mechanic_id: int,
+    reason: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session)
+):
+    """Reject a mechanic registration (admin only)"""
+    if current_user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only admins can reject mechanics"
+        )
+    
+    mechanic = db.query(User).filter(User.id == mechanic_id).first()
+    if not mechanic:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Mechanic not found"
+        )
+    
+    # Delete the rejected registration
+    db.delete(mechanic)
+    db.commit()
+    
+    return {"message": f"Mechanic registration rejected", "reason": reason}

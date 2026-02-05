@@ -20,7 +20,8 @@ app = FastAPI(
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[settings.frontend_url, "http://localhost:3000"],
+    # allow_origins=[settings.frontend_url, "http://localhost:3000"],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -32,16 +33,13 @@ app.mount("/uploads", StaticFiles(directory="app/uploads"), name="uploads")
 # Create tables on startup
 @app.on_event("startup")
 def on_startup():
-    # For development: drop and recreate tables to ensure schema is up to date
-    if settings.debug:
-        print("🔄 Development mode: Recreating database tables...")
-        drop_and_recreate_tables()
-    else:
-        create_db_and_tables()
-    print("✅ Database tables created")
+    # Create tables if they don't exist (but don't drop existing data)
+    create_db_and_tables()
+    print("✅ Database tables ready")
     print("🚀 AutoCare Connect API Ready!")
     print(f"📡 API: http://localhost:8000")
     print(f"📚 Docs: http://localhost:8000/docs")
+    print(f"💡 To reseed database: python seed_test_data.py")
 
 # Include routers
 app.include_router(auth.router)
