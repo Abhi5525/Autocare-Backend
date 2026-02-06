@@ -1,5 +1,5 @@
 # app/schemas/service.py
-from pydantic import BaseModel
+from pydantic import BaseModel, computed_field
 from typing import List, Optional, Dict, Any
 from datetime import datetime, date
 from app.models.service import ServiceStatus, ServiceType, PaymentStatus
@@ -60,6 +60,15 @@ class ServiceRecordResponse(BaseModel):
 
     class Config:
         from_attributes = True
+    
+    @computed_field
+    @property
+    def total_cost(self) -> Optional[float]:
+        """Calculate total cost including base cost and parts"""
+        base_cost = self.final_cost if self.final_cost is not None else (self.cost_estimate or 0)
+        parts_cost = sum(part.total_price for part in self.parts_used) if self.parts_used else 0
+        total = base_cost + parts_cost
+        return round(total, 2) if total > 0 else None
 
 class VoiceProcessingResponse(BaseModel):
     draft_id: int

@@ -1,6 +1,7 @@
 # app/routers/services.py
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Query
 from sqlmodel import Session, select
+from sqlalchemy.orm import selectinload
 from typing import List, Optional, Dict, Any
 from datetime import datetime, date, timedelta
 import json
@@ -34,7 +35,7 @@ async def list_all_services(
     """
     Get all service records (filtered by user role)
     """
-    query = select(ServiceRecord)
+    query = select(ServiceRecord).options(selectinload(ServiceRecord.parts_used))
     
     # Filter by role
     if current_user.role == "owner":
@@ -241,7 +242,7 @@ async def get_draft_services(
     """
     Get draft service records
     """
-    query = select(ServiceRecord).where(ServiceRecord.status == ServiceStatus.DRAFT)
+    query = select(ServiceRecord).options(selectinload(ServiceRecord.parts_used)).where(ServiceRecord.status == ServiceStatus.DRAFT)
     
     # Mechanics can only see their drafts
     if current_user.role == "mechanic":
@@ -269,7 +270,7 @@ async def get_approved_services(
     """
     Get approved service records with filters
     """
-    query = select(ServiceRecord).where(ServiceRecord.status == ServiceStatus.APPROVED)
+    query = select(ServiceRecord).options(selectinload(ServiceRecord.parts_used)).where(ServiceRecord.status == ServiceStatus.APPROVED)
     
     # Apply filters
     if vehicle_id:
@@ -301,7 +302,8 @@ async def get_service_record(
     """
     Get specific service record
     """
-    service = db.get(ServiceRecord, service_id)
+    query = select(ServiceRecord).options(selectinload(ServiceRecord.parts_used)).where(ServiceRecord.id == service_id)
+    service = db.exec(query).first()
     
     if not service:
         raise HTTPException(
@@ -541,6 +543,7 @@ async def get_vehicle_service_history(
     
     services = db.exec(
         select(ServiceRecord)
+        .options(selectinload(ServiceRecord.parts_used))
         .where(ServiceRecord.vehicle_id == vehicle_id)
         .where(ServiceRecord.status == ServiceStatus.APPROVED)
         .order_by(ServiceRecord.service_date.desc())
@@ -561,7 +564,7 @@ async def get_service_statistics(
     """
     Get service statistics
     """
-    query = select(ServiceRecord).where(ServiceRecord.status == ServiceStatus.APPROVED)
+    query = select(ServiceRecord).options(selectinload(ServiceRecord.parts_used)).where(ServiceRecord.status == ServiceStatus.APPROVED)
     
     if start_date:
         query = query.where(ServiceRecord.service_date >= start_date)
@@ -576,9 +579,14 @@ async def get_service_statistics(
     
     services = db.exec(query).all()
     
-    # Calculate statistics
+    # Calculate statistics including parts costs
     total_services = len(services)
-    total_revenue = sum((s.final_cost or s.cost_estimate or 0) for s in services)
+    total_revenue = 0
+    for s in services:
+        base_cost = s.final_cost if s.final_cost is not None else (s.cost_estimate or 0)
+        parts_cost = sum(part.total_price for part in s.parts_used) if s.parts_used else 0
+        total_revenue += base_cost + parts_cost
+    
     avg_service_cost = total_revenue / total_services if total_services > 0 else 0
     
     # Count by service type

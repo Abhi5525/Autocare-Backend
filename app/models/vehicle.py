@@ -59,7 +59,7 @@ class VehicleBase(SQLModel):
 # ===== Pydantic Schemas for API =====
 class VehicleCreate(VehicleBase):
     """For creating a new vehicle"""
-    pass  # owner_id will be set from authenticated user
+    current_odometer: Optional[int] = 0  # Initial odometer reading
 
 
 class VehicleUpdate(SQLModel):

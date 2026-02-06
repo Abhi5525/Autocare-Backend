@@ -1,5 +1,5 @@
 # app/routers/vehicles.py
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Query
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Query, Form
 from sqlmodel import Session, select
 from typing import List, Optional
 import os
@@ -206,8 +206,8 @@ async def delete_vehicle(
 async def upload_vehicle_photo(
     vehicle_id: int,
     file: UploadFile = File(...),
-    caption: Optional[str] = None,
-    is_primary: bool = False,
+    caption: Optional[str] = Form(None),
+    is_primary: bool = Form(False),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_session)
 ):
@@ -234,6 +234,12 @@ async def upload_vehicle_photo(
     upload_service = UploadService()
     image, file_ext = upload_service.validate_image(file)
     
+    # Get file size before processing
+    file.file.seek(0)
+    file_contents = file.file.read()
+    file_size = len(file_contents)
+    file.file.seek(0)
+    
     # Save image
     filename = upload_service.save_image(
         image, 
@@ -248,11 +254,21 @@ async def upload_vehicle_photo(
         uploaded_by=current_user.id,
         caption=caption,
         is_primary=is_primary,
-        file_size=len(file.file.read()),
+        file_size=file_size,
         file_type=file.content_type or "image/jpeg",
         width=image.width,
         height=image.height
     )
+    
+    # Check if this is the first photo for the vehicle
+    existing_photos = db.exec(
+        select(VehiclePhoto).where(VehiclePhoto.vehicle_id == vehicle_id)
+    ).all()
+    
+    # If no existing photos or is_primary is True, set as primary
+    if len(existing_photos) == 0 or is_primary:
+        photo.is_primary = True
+        is_primary = True
     
     # If this is primary, unset other primary photos
     if is_primary:
@@ -267,17 +283,19 @@ async def upload_vehicle_photo(
         if existing_primary:
             existing_primary.is_primary = False
             db.add(existing_primary)
+        
+        # Update vehicle's primary photo URL
+        vehicle.primary_photo_url = f"/uploads/vehicles/{filename}"
+        db.add(vehicle)
     
     db.add(photo)
     db.commit()
     db.refresh(photo)
     
-    # Update vehicle's primary photo if this is primary
-    if is_primary and not vehicle.primary_photo_url:
-        vehicle.primary_photo_url = photo.photo_url
-        db.add(vehicle)
-        db.commit()
+    if is_primary:
+        db.refresh(vehicle)
     
+    return photo
     return photo
 
 @router.get("/{vehicle_id}/photos", response_model=List[VehiclePhoto])
