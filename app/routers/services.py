@@ -609,3 +609,65 @@ async def get_service_statistics(
             "end_date": end_date or date.today()
         }
     }
+
+
+@router.get("/admin/vehicle/{vehicle_id}/full-history")
+async def get_vehicle_full_history(
+    vehicle_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session)
+):
+    """Get complete service history for a vehicle (admin only)"""
+    if current_user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only admins can access full vehicle history"
+        )
+    
+    from app.models.vehicle import Vehicle
+    
+    vehicle = db.get(Vehicle, vehicle_id)
+    if not vehicle:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Vehicle not found"
+        )
+    
+    # Get all service records for this vehicle
+    services = db.query(ServiceRecord).filter(
+        ServiceRecord.vehicle_id == vehicle_id
+    ).order_by(ServiceRecord.created_at.desc()).all()
+    
+    # Get owner information
+    owner = db.query(User).filter(User.id == vehicle.owner_id).first()
+    
+    # Calculate statistics
+    total_services = len(services)
+    total_spent = sum(
+        (s.final_cost or s.cost_estimate or 0) + 
+        sum(p.total_price for p in s.parts_used) if s.parts_used else 0
+        for s in services
+    )
+    
+    return {
+        "vehicle": {
+            "id": vehicle.id,
+            "registration": vehicle.registration_number,
+            "brand": vehicle.make,
+            "model": vehicle.model,
+            "year": vehicle.year,
+            "color": vehicle.color
+        },
+        "owner": {
+            "id": owner.id,
+            "full_name": owner.full_name,
+            "email": owner.email,
+            "phone": owner.phone
+        },
+        "statistics": {
+            "total_services": total_services,
+            "total_spent": round(total_spent, 2),
+            "avg_service_cost": round(total_spent / total_services if total_services > 0 else 0, 2)
+        },
+        "services": services
+    }

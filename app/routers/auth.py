@@ -1,12 +1,14 @@
 # app/routers/auth.py
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
 from fastapi.security import OAuth2PasswordRequestForm
-from sqlmodel import Session
+from sqlmodel import Session, func
 from typing import Optional
 import os
 from PIL import Image
 import io
-from datetime import datetime
+from datetime import datetime, timedelta
+import secrets
+import hashlib
 
 from app.core.database import get_session
 from app.core.security import verify_password, get_password_hash, create_access_token
@@ -88,17 +90,17 @@ async def register(
         garage_registration=user_data.garage_registration,
         pan_number=user_data.pan_number,
         garage_address=user_data.garage_address,
-        # Mechanics need admin approval
-        is_active=True if user_data.role != "mechanic" else False,
-        is_approved=False
+        # Mechanics start as active but need admin approval
+        is_active=True,  # Always true so mechanics show as "Pending" not "Rejected"
+        is_approved=True if user_data.role != "mechanic" else False  # Only mechanics need approval
     )
     
     db.add(user)
     db.commit()
     db.refresh(user)
     
-    # Don't create token for inactive mechanics
-    if not user.is_active:
+    # Don't create token for unapproved mechanics
+    if user.role == "mechanic" and not user.is_approved:
         raise HTTPException(
             status_code=status.HTTP_202_ACCEPTED,
             detail="Your registration is pending admin approval. You will receive a notification once approved."
@@ -133,7 +135,14 @@ async def login(
     if not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Account is inactive"
+            detail="Account has been deactivated"
+        )
+    
+    # Check if mechanic is approved
+    if user.role == "mechanic" and not user.is_approved:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Your mechanic account is pending admin approval"
         )
     
     access_token = create_access_token(data={"user_id": user.id, "role": user.role})
@@ -171,7 +180,14 @@ async def login_json(
     if not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Account is inactive"
+            detail="Account has been deactivated"
+        )
+    
+    # Check if mechanic is approved
+    if user.role == "mechanic" and not user.is_approved:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Your mechanic account is pending admin approval"
         )
     
     access_token = create_access_token(data={"user_id": user.id, "role": user.role})
@@ -522,3 +538,465 @@ async def delete_user(
     db.commit()
     
     return {"message": f"User {user.full_name} deleted successfully"}
+
+
+@router.get("/admin/all-vehicles")
+async def get_all_vehicles_admin(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+    skip: int = 0,
+    limit: int = 100
+):
+    """Get all vehicles with comprehensive information (admin only)"""
+    if current_user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only admins can access all vehicles"
+        )
+    
+    from app.models.vehicle import Vehicle
+    
+    vehicles = db.query(Vehicle).join(User, Vehicle.owner_id == User.id).offset(skip).limit(limit).all()
+    
+    result = []
+    for vehicle in vehicles:
+        owner = db.query(User).filter(User.id == vehicle.owner_id).first()
+        
+        # Calculate service status
+        service_status = "Up to date"
+        days_since_service = None
+        if vehicle.last_service_date:
+            days_since_service = (datetime.now().date() - vehicle.last_service_date).days
+            if days_since_service > 180:  # 6 months
+                service_status = "Service due"
+            elif days_since_service > 365:  # 1 year
+                service_status = "Overdue"
+        else:
+            service_status = "No service record"
+        
+        # Calculate document status
+        documents_status = "Valid"
+        if vehicle.insurance_expiry and vehicle.insurance_expiry < datetime.now().date():
+            documents_status = "Insurance expired"
+        elif vehicle.pollution_expiry and vehicle.pollution_expiry < datetime.now().date():
+            documents_status = "Pollution expired"
+        elif not vehicle.insurance_expiry or not vehicle.pollution_expiry:
+            documents_status = "Documents missing"
+
+        result.append({
+            "id": vehicle.id,
+            "registration_number": vehicle.registration_number,
+            "make": vehicle.make,
+            "model": vehicle.model,
+            "year": vehicle.year,
+            "color": vehicle.color,
+            "vehicle_type": vehicle.vehicle_type,
+            "fuel_type": vehicle.fuel_type,
+            "transmission": vehicle.transmission,
+            "vin": vehicle.vin,
+            "engine_number": vehicle.engine_number,
+            "current_odometer": vehicle.current_odometer,
+            "insurance_expiry": vehicle.insurance_expiry,
+            "pollution_expiry": vehicle.pollution_expiry,
+            "primary_photo_url": vehicle.primary_photo_url,
+            "last_service_date": vehicle.last_service_date,
+            "last_service_km": vehicle.last_service_km,
+            "next_service_date": vehicle.next_service_date,
+            "next_service_km": vehicle.next_service_km,
+            "qr_code_url": vehicle.qr_code_url,
+            "service_status": service_status,
+            "days_since_service": days_since_service,
+            "documents_status": documents_status,
+            "created_at": vehicle.created_at,
+            "updated_at": vehicle.updated_at,
+            "owner_name": owner.full_name,
+            "owner_email": owner.email,
+            "owner_phone": owner.phone,
+            "owner_id": owner.id
+        })
+    
+    return result
+
+
+@router.get("/admin/vehicle/{vehicle_id}")
+async def get_vehicle_details_admin(
+    vehicle_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session)
+):
+    """Get detailed vehicle information with service history (admin only)"""
+    if current_user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only admins can access vehicle details"
+        )
+    
+    from app.models.vehicle import Vehicle
+    from app.models.service import ServiceRecord
+    
+    vehicle = db.query(Vehicle).filter(Vehicle.id == vehicle_id).first()
+    if not vehicle:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Vehicle not found"
+        )
+    
+    owner = db.query(User).filter(User.id == vehicle.owner_id).first()
+    
+    # Get service history
+    service_records = db.query(ServiceRecord).filter(
+        ServiceRecord.vehicle_id == vehicle_id
+    ).order_by(ServiceRecord.service_date.desc()).limit(10).all()
+    
+    # Calculate comprehensive stats
+    total_services = db.query(ServiceRecord).filter(ServiceRecord.vehicle_id == vehicle_id).count()
+    total_service_cost = db.query(ServiceRecord).filter(
+        ServiceRecord.vehicle_id == vehicle_id,
+        ServiceRecord.total_cost.isnot(None)
+    ).with_entities(func.sum(ServiceRecord.total_cost)).scalar() or 0
+    
+    return {
+        "vehicle": {
+            "id": vehicle.id,
+            "registration_number": vehicle.registration_number,
+            "make": vehicle.make,
+            "model": vehicle.model,
+            "year": vehicle.year,
+            "color": vehicle.color,
+            "vehicle_type": vehicle.vehicle_type,
+            "fuel_type": vehicle.fuel_type,
+            "transmission": vehicle.transmission,
+            "vin": vehicle.vin,
+            "engine_number": vehicle.engine_number,
+            "current_odometer": vehicle.current_odometer,
+            "insurance_expiry": vehicle.insurance_expiry,
+            "pollution_expiry": vehicle.pollution_expiry,
+            "primary_photo_url": vehicle.primary_photo_url,
+            "last_service_date": vehicle.last_service_date,
+            "next_service_date": vehicle.next_service_date,
+            "qr_code_url": vehicle.qr_code_url,
+            "created_at": vehicle.created_at,
+            "updated_at": vehicle.updated_at,
+        },
+        "owner": {
+            "id": owner.id,
+            "full_name": owner.full_name,
+            "email": owner.email,
+            "phone": owner.phone,
+            "address": owner.address,
+            "city": owner.city,
+        },
+        "service_history": [
+            {
+                "id": service.id,
+                "service_type": service.service_type,
+                "description": service.description,
+                "service_date": service.service_date,
+                "total_cost": service.total_cost,
+                "status": service.status,
+                "mechanic_id": service.mechanic_id
+            } for service in service_records
+        ],
+        "statistics": {
+            "total_services": total_services,
+            "total_service_cost": total_service_cost,
+            "avg_service_cost": total_service_cost / total_services if total_services > 0 else 0,
+            "days_since_last_service": (
+                (datetime.now().date() - vehicle.last_service_date).days 
+                if vehicle.last_service_date else None
+            )
+        }
+    }
+
+
+@router.get("/admin/vehicle-statistics")
+async def get_vehicle_statistics(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session)
+):
+    """Get comprehensive vehicle statistics (admin only)"""
+    if current_user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only admins can access vehicle statistics"
+        )
+    
+    from app.models.vehicle import Vehicle
+    from sqlmodel import func
+    
+    # Basic counts
+    total_vehicles = db.query(Vehicle).count()
+    
+    # By fuel type
+    fuel_stats = db.query(
+        Vehicle.fuel_type, func.count(Vehicle.id).label('count')
+    ).group_by(Vehicle.fuel_type).all()
+    
+    # By vehicle type
+    type_stats = db.query(
+        Vehicle.vehicle_type, func.count(Vehicle.id).label('count')
+    ).group_by(Vehicle.vehicle_type).all()
+    
+    # By year (last 10 years)
+    current_year = datetime.now().year
+    year_stats = db.query(
+        Vehicle.year, func.count(Vehicle.id).label('count')
+    ).filter(Vehicle.year >= current_year - 10).group_by(Vehicle.year).order_by(Vehicle.year.desc()).all()
+    
+    # Service status calculation
+    vehicles_with_service = db.query(Vehicle).filter(Vehicle.last_service_date.isnot(None)).all()
+    service_due_count = 0
+    overdue_count = 0
+    up_to_date_count = 0
+    
+    for vehicle in vehicles_with_service:
+        if vehicle.last_service_date:
+            days_since = (datetime.now().date() - vehicle.last_service_date).days
+            if days_since > 365:
+                overdue_count += 1
+            elif days_since > 180:
+                service_due_count += 1
+            else:
+                up_to_date_count += 1
+    
+    no_service_count = total_vehicles - len(vehicles_with_service)
+    
+    return {
+        "total_vehicles": total_vehicles,
+        "fuel_distribution": [{"fuel_type": item.fuel_type, "count": item.count} for item in fuel_stats],
+        "type_distribution": [{"vehicle_type": item.vehicle_type, "count": item.count} for item in type_stats],
+        "year_distribution": [{"year": item.year, "count": item.count} for item in year_stats],
+        "service_status": {
+            "up_to_date": up_to_date_count,
+            "service_due": service_due_count,
+            "overdue": overdue_count,
+            "no_service_record": no_service_count
+        },
+        "avg_vehicle_age": current_year - (sum(item.year * item.count for item in year_stats) / sum(item.count for item in year_stats)) if year_stats else 0
+    }
+
+
+@router.get("/admin/enhanced-statistics")
+async def get_enhanced_admin_statistics(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session)
+):
+    """Get comprehensive admin statistics with analytics (admin only)"""
+    if current_user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only admins can access statistics"
+        )
+    
+    from app.models.vehicle import Vehicle
+    from app.models.service import ServiceRecord
+    from sqlmodel import func
+    from datetime import datetime, timedelta
+    
+    # User statistics
+    total_users = db.query(User).count()
+    total_owners = db.query(User).filter(User.role == "owner").count()
+    total_mechanics = db.query(User).filter(User.role == "mechanic", User.is_approved == True).count()
+    pending_mechanics = db.query(User).filter(User.role == "mechanic", User.is_approved == False).count()
+    
+    # Vehicle statistics
+    total_vehicles = db.query(Vehicle).count()
+    recent_vehicles = db.query(Vehicle).filter(
+        Vehicle.created_at >= datetime.now() - timedelta(days=30)
+    ).count()
+    
+    # Service statistics
+    total_services = db.query(ServiceRecord).count()
+    pending_services = db.query(ServiceRecord).filter(ServiceRecord.status == "pending_approval").count()
+    completed_services = db.query(ServiceRecord).filter(ServiceRecord.status == "approved").count()
+    
+    # Revenue calculation (from completed services)
+    total_revenue = db.query(func.sum(ServiceRecord.final_cost)).filter(
+        ServiceRecord.status == "approved",
+        ServiceRecord.final_cost.isnot(None)
+    ).scalar() or 0
+    
+    # Recent activity
+    recent_services = db.query(ServiceRecord).filter(
+        ServiceRecord.created_at >= datetime.now() - timedelta(days=30)
+    ).count()
+    
+    # User registrations by month
+    monthly_users = db.query(
+        func.extract('month', User.created_at).label('month'),
+        func.count(User.id).label('count')
+    ).filter(
+        User.created_at >= datetime.now() - timedelta(days=365)
+    ).group_by(func.extract('month', User.created_at)).all()
+    
+    return {
+        "users": {
+            "total": total_users,
+            "owners": total_owners,
+            "mechanics": total_mechanics,
+            "pending_mechanics": pending_mechanics
+        },
+        "vehicles": {
+            "total": total_vehicles,
+            "recent": recent_vehicles
+        },
+        "services": {
+            "total": total_services,
+            "completed": completed_services,
+            "pending": pending_services,
+            "recent": recent_services
+        },
+        "revenue": {
+            "total": float(total_revenue),
+            "monthly_avg": float(total_revenue) / 12
+        },
+        "analytics": {
+            "monthly_users": [{
+                "month": int(item.month),
+                "count": item.count
+            } for item in monthly_users]
+        }
+    }
+
+
+# Password Reset Endpoints
+
+@router.post("/forgot-password")
+async def forgot_password(
+    email: str,
+    db: Session = Depends(get_session)
+):
+    """
+    Request password reset - generates a reset token.
+    In a production environment, this would send an email with the reset link.
+    """
+    user = db.query(User).filter(User.email == email).first()
+    
+    if not user:
+        # Don't reveal if email exists or not for security
+        return {"message": "If the email exists, a password reset link has been sent"}
+    
+    # Generate reset token (expires in 1 hour)
+    reset_token = secrets.token_urlsafe(32)
+    reset_token_hash = hashlib.sha256(reset_token.encode()).hexdigest()
+    
+    # Store hashed token and expiry
+    user.reset_token_hash = reset_token_hash
+    user.reset_token_expires_at = datetime.now() + timedelta(hours=1)
+    user.updated_at = datetime.now()
+    
+    db.add(user)
+    db.commit()
+    
+    # In production, send email with reset link here
+    # For now, return the token (REMOVE IN PRODUCTION!)
+    return {
+        "message": "Password reset token generated",
+        "reset_token": reset_token,  # Remove this in production!
+        "expires_in": "1 hour",
+        "note": "In production, this token would be sent via email"
+    }
+
+
+@router.post("/reset-password")
+async def reset_password(
+    email: str,
+    reset_token: str,
+    new_password: str,
+    db: Session = Depends(get_session)
+):
+    """
+    Reset password using the reset token
+    """
+    user = db.query(User).filter(User.email == email).first()
+    
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid reset request"
+        )
+    
+    # Check if token exists and is not expired
+    if not user.reset_token_hash or not user.reset_token_expires_at:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No active password reset request"
+        )
+    
+    if datetime.now() > user.reset_token_expires_at:
+        # Clear expired token
+        user.reset_token_hash = None
+        user.reset_token_expires_at = None
+        db.add(user)
+        db.commit()
+        
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Reset token has expired"
+        )
+    
+    # Verify token
+    provided_token_hash = hashlib.sha256(reset_token.encode()).hexdigest()
+    if provided_token_hash != user.reset_token_hash:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid reset token"
+        )
+    
+    # Validate new password (add your own validation rules)
+    if len(new_password) < 8:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Password must be at least 8 characters long"
+        )
+    
+    # Update password and clear reset token
+    user.password_hash = get_password_hash(new_password)
+    user.reset_token_hash = None
+    user.reset_token_expires_at = None
+    user.updated_at = datetime.now()
+    
+    db.add(user)
+    db.commit()
+    
+    return {"message": "Password reset successfully"}
+
+
+@router.post("/change-password")
+async def change_password(
+    current_password: str,
+    new_password: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session)
+):
+    """
+    Change password for authenticated user
+    """
+    # Verify current password
+    if not verify_password(current_password, current_user.password_hash):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Current password is incorrect"
+        )
+    
+    # Validate new password
+    if len(new_password) < 8:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Password must be at least 8 characters long"
+        )
+    
+    if new_password == current_password:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="New password must be different from current password"
+        )
+    
+    # Update password
+    current_user.password_hash = get_password_hash(new_password)
+    current_user.updated_at = datetime.now()
+    
+    db.add(current_user)
+    db.commit()
+    
+    return {"message": "Password changed successfully"}

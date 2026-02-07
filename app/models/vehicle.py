@@ -32,6 +32,20 @@ class TransmissionType(str, Enum):
     AUTOMATIC = "automatic"
     CVT = "cvt"
 
+class ChargingPortType(str, Enum):
+    TYPE1 = "type1"
+    TYPE2 = "type2"
+    CCS = "ccs"
+    CHAdeMO = "chademo"
+    TESLA = "tesla"
+
+class EmissionStandard(str, Enum):
+    BS4 = "bs4"
+    BS6 = "bs6"
+    EURO4 = "euro4"
+    EURO5 = "euro5"
+    EURO6 = "euro6"
+
 
 # ===== Base Schemas =====
 class VehicleBase(SQLModel):
@@ -47,6 +61,19 @@ class VehicleBase(SQLModel):
 
     vin: Optional[str] = None
     engine_number: Optional[str] = None
+    
+    # Electric Vehicle specific fields
+    battery_capacity_kwh: Optional[float] = None  # kWh
+    electric_range_km: Optional[int] = None  # Range in km
+    charging_port_type: Optional[ChargingPortType] = None
+    fast_charging_supported: Optional[bool] = None
+    motor_power_kw: Optional[float] = None  # Motor power in kW
+    
+    # Fuel Vehicle specific fields  
+    engine_displacement_cc: Optional[int] = None  # Engine displacement in CC
+    fuel_tank_capacity_l: Optional[float] = None  # Fuel tank capacity in liters
+    mileage_kmpl: Optional[float] = None  # Mileage in km/liter
+    emission_standard: Optional[EmissionStandard] = None
 
     @field_validator("year")
     def validate_year(cls, v):
@@ -74,6 +101,19 @@ class VehicleUpdate(SQLModel):
     next_service_date: Optional[date] = None
     next_service_km: Optional[int] = None
     qr_code_url: Optional[str] = None
+    
+    # Electric Vehicle updates
+    battery_capacity_kwh: Optional[float] = None
+    electric_range_km: Optional[int] = None
+    charging_port_type: Optional[ChargingPortType] = None
+    fast_charging_supported: Optional[bool] = None
+    motor_power_kw: Optional[float] = None
+    
+    # Fuel Vehicle updates
+    engine_displacement_cc: Optional[int] = None
+    fuel_tank_capacity_l: Optional[float] = None
+    mileage_kmpl: Optional[float] = None
+    emission_standard: Optional[EmissionStandard] = None
 
 
 # ===== DB Model =====
@@ -127,6 +167,19 @@ class VehicleResponse(VehicleBase):
     qr_code_url: Optional[str]
     created_at: datetime
     updated_at: datetime
+    
+    # Electric Vehicle fields
+    battery_capacity_kwh: Optional[float]
+    electric_range_km: Optional[int]
+    charging_port_type: Optional[ChargingPortType]
+    fast_charging_supported: Optional[bool]
+    motor_power_kw: Optional[float]
+    
+    # Fuel Vehicle fields
+    engine_displacement_cc: Optional[int]
+    fuel_tank_capacity_l: Optional[float]
+    mileage_kmpl: Optional[float]
+    emission_standard: Optional[EmissionStandard]
 
     class Config:
         from_attributes = True

@@ -106,6 +106,10 @@ class User(UserBase, table=True):
     approved_by: Optional[int] = None  # Admin who approved
     approved_at: Optional[datetime] = None  # When approved
 
+    # Password reset fields
+    reset_token_hash: Optional[str] = None  # Hashed reset token
+    reset_token_expires_at: Optional[datetime] = None  # Token expiry
+
     # Timestamps
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)
