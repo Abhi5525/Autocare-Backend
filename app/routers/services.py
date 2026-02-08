@@ -2,7 +2,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Query
 from sqlmodel import Session, select
 from sqlalchemy.orm import selectinload
-from typing import List, Optional, Dict, Any
+from typing import List, Optional
 from datetime import datetime, date, timedelta
 import json
 
@@ -19,6 +19,10 @@ from app.schemas.service import (
 )
 from app.services.voice_service import VoiceProcessingService
 from app.services.upload_service import UploadService, UPLOAD_DIRS
+from app.utils import (
+    get_or_404, raise_not_found, raise_forbidden, raise_bad_request,
+    require_vehicle_access, check_vehicle_ownership, require_service_edit_permission
+)
 
 router = APIRouter(prefix="/api/services", tags=["Services"])
 voice_service = VoiceProcessingService()
@@ -59,23 +63,19 @@ async def create_service_record(
     """
     Create a new service record (manual entry)
     """
-    # Check if vehicle exists
-    vehicle = db.get(Vehicle, service_data.vehicle_id)
-    if not vehicle:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Vehicle not found"
-        )
+    # Check vehicle exists and permissions
+    vehicle = get_or_404(db, Vehicle, service_data.vehicle_id, "Vehicle")
+    check_vehicle_ownership(current_user, vehicle)
     
-    # Check permissions
-    if vehicle.owner_id != current_user.id and current_user.role not in ["admin", "mechanic"]:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You don't have permission to add services for this vehicle"
-        )
+    # Prepare service data dict
+    service_dict = service_data.dict(exclude={'parts_replaced', 'labor_cost', 'parts_cost', 'notes'})
+    
+    # Map 'notes' to 'service_notes' if provided
+    if service_data.notes:
+        service_dict['service_notes'] = service_data.notes
     
     # Create service record
-    service = ServiceRecord(**service_data.dict())
+    service = ServiceRecord(**service_dict)
     
     # Set mechanic if not specified and current user is mechanic
     if not service.mechanic_id and current_user.role == "mechanic":
@@ -92,6 +92,28 @@ async def create_service_record(
     db.add(service)
     db.commit()
     db.refresh(service)
+    
+    # Handle parts_replaced if provided (store in service_notes or as separate records)
+    if service_data.parts_replaced:
+        parts_text = ", ".join(service_data.parts_replaced)
+        if service.service_notes:
+            service.service_notes += f"\nParts replaced: {parts_text}"
+        else:
+            service.service_notes = f"Parts replaced: {parts_text}"
+        
+        # Store labor and parts cost info
+        cost_details = []
+        if service_data.labor_cost:
+            cost_details.append(f"Labor: Rs {service_data.labor_cost}")
+        if service_data.parts_cost:
+            cost_details.append(f"Parts: Rs {service_data.parts_cost}")
+        
+        if cost_details:
+            service.service_notes += f"\nCost breakdown: {', '.join(cost_details)}"
+        
+        db.add(service)
+        db.commit()
+        db.refresh(service)
     
     return service
 
@@ -306,21 +328,11 @@ async def get_service_record(
     service = db.exec(query).first()
     
     if not service:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Service record not found"
-        )
+        raise_not_found("Service record", service_id)
     
-    # Check permissions
-    vehicle = db.get(Vehicle, service.vehicle_id)
-    if not vehicle:
-        raise HTTPException(status_code=404, detail="Vehicle not found")
-    
-    if vehicle.owner_id != current_user.id and current_user.role not in ["admin", "mechanic"]:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You don't have permission to view this service record"
-        )
+    # Check vehicle permissions
+    vehicle = get_or_404(db, Vehicle, service.vehicle_id, "Vehicle")
+    check_vehicle_ownership(current_user, vehicle)
     
     return service
 
@@ -333,19 +345,10 @@ async def approve_service_draft(
     """
     Approve a draft service record
     """
-    service = db.get(ServiceRecord, service_id)
-    
-    if not service:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Service record not found"
-        )
+    service = get_or_404(db, ServiceRecord, service_id, "Service record")
     
     if service.status != ServiceStatus.DRAFT:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Only draft records can be approved"
-        )
+        raise_bad_request("Only draft records can be approved")
     
     # Update service
     service.status = ServiceStatus.APPROVED
@@ -384,19 +387,10 @@ async def reject_service_draft(
     """
     Reject a draft service record
     """
-    service = db.get(ServiceRecord, service_id)
-    
-    if not service:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Service record not found"
-        )
+    service = get_or_404(db, ServiceRecord, service_id, "Service record")
     
     if service.status != ServiceStatus.DRAFT:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Only draft records can be rejected"
-        )
+        raise_bad_request("Only draft records can be rejected")
     
     service.status = ServiceStatus.REJECTED
     service.voice_transcript = f"{service.voice_transcript or ''}\n\nREJECTED: {reason}"
@@ -406,6 +400,29 @@ async def reject_service_draft(
     db.commit()
     
     return {"message": "Service draft rejected", "service_id": service_id}
+
+@router.delete("/{service_id}")
+async def delete_service_record(
+    service_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session)
+):
+    """
+    Delete a service record (only drafts can be deleted, only by creator or admin)
+    """
+    service = get_or_404(db, ServiceRecord, service_id, "Service record")
+    
+    # Check permissions - only allow deleting drafts
+    if service.status != ServiceStatus.DRAFT:
+        raise_bad_request("Only draft services can be deleted")
+    
+    # Check if user can delete (creator or admin)
+    require_service_edit_permission(current_user, service.mechanic_id, service.status)
+    
+    db.delete(service)
+    db.commit()
+    
+    return {"message": "Service record deleted successfully", "service_id": service_id}
 
 @router.put("/{service_id}", response_model=ServiceRecordResponse)
 async def update_service_record(
@@ -456,6 +473,83 @@ async def update_service_record(
     
     return service
 
+@router.put("/{service_id}/draft-update", response_model=ServiceRecordResponse)
+async def update_draft_service(
+    service_id: int,
+    draft_update: dict,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session)
+):
+    """
+    Update a draft service record from voice entry review
+    """
+    service = get_or_404(db, ServiceRecord, service_id, "Service record")
+    
+    # Only allow updating drafts
+    if service.status != ServiceStatus.DRAFT:
+        raise_bad_request("Can only update draft services")
+    
+    # Check permissions
+    require_service_edit_permission(current_user, service.mechanic_id, service.status)
+    
+    # Update allowed fields
+    if 'description' in draft_update:
+        service.description = draft_update['description']
+    if 'service_notes' in draft_update:
+        service.service_notes = draft_update['service_notes']
+    if 'cost_estimate' in draft_update:
+        service.cost_estimate = float(draft_update['cost_estimate'])
+    if 'odometer_reading' in draft_update:
+        service.odometer_reading = int(draft_update['odometer_reading'])
+    
+    service.updated_at = datetime.now()
+    
+    db.add(service)
+    db.commit()
+    db.refresh(service)
+    
+    return service
+
+@router.put("/{service_id}/submit-draft", response_model=ServiceRecordResponse)
+async def submit_draft_service(
+    service_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session)
+):
+    """
+    Submit a draft service for approval/completion
+    """
+    service = get_or_404(db, ServiceRecord, service_id, "Service record")
+    
+    # Only allow submitting drafts
+    if service.status != ServiceStatus.DRAFT:
+        raise_bad_request("Can only submit draft services")
+    
+    # Check permissions
+    require_service_edit_permission(current_user, service.mechanic_id, service.status)
+    
+    # Update vehicle odometer if provided
+    if service.odometer_reading:
+        vehicle = db.get(Vehicle, service.vehicle_id)
+        if vehicle and service.odometer_reading > vehicle.current_odometer:
+            vehicle.current_odometer = service.odometer_reading
+            vehicle.last_service_date = service.service_date
+            vehicle.last_service_km = service.odometer_reading
+            db.add(vehicle)
+    
+    # Mechanics can self-approve their service records
+    service.status = ServiceStatus.APPROVED
+    service.approver_id = current_user.id
+    service.approved_at = datetime.now()
+    service.completion_date = datetime.now()
+    service.updated_at = datetime.now()
+    
+    db.add(service)
+    db.commit()
+    db.refresh(service)
+    
+    return service
+
 @router.post("/{service_id}/photos")
 async def upload_service_photos(
     service_id: int,
@@ -466,20 +560,11 @@ async def upload_service_photos(
     """
     Upload photos for a service record
     """
-    service = db.get(ServiceRecord, service_id)
-    
-    if not service:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Service record not found"
-        )
+    service = get_or_404(db, ServiceRecord, service_id, "Service record")
     
     # Check if mechanic owns this service
     if service.mechanic_id != current_user.id and current_user.role != "admin":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You can only upload photos for your own service records"
-        )
+        raise_forbidden("You can only upload photos for your own service records")
     
     upload_service = UploadService()
     uploaded_urls = []
@@ -526,20 +611,8 @@ async def get_vehicle_service_history(
     """
     Get service history for a vehicle
     """
-    vehicle = db.get(Vehicle, vehicle_id)
-    
-    if not vehicle:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Vehicle not found"
-        )
-    
-    # Check permissions
-    if vehicle.owner_id != current_user.id and current_user.role not in ["admin", "mechanic"]:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You don't have permission to view this vehicle's service history"
-        )
+    vehicle = get_or_404(db, Vehicle, vehicle_id, "Vehicle")
+    check_vehicle_ownership(current_user, vehicle)
     
     services = db.exec(
         select(ServiceRecord)

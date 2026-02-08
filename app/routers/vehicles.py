@@ -1,6 +1,6 @@
 # app/routers/vehicles.py
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Query, Form
-from sqlmodel import Session, select
+from sqlmodel import Session, select, or_
 from typing import List, Optional
 import os
 
@@ -9,8 +9,13 @@ from app.dependencies.deps import get_current_user, get_current_owner
 from app.models.user import User
 from app.models.vehicle import Vehicle, VehicleCreate, VehicleUpdate, VehicleType, FuelType, TransmissionType
 from app.models.vehicle_photo import VehiclePhoto, VehiclePhotoCreate
+from app.models.vehicle_access import VehicleAccessRequest, AccessStatus
 from app.services.upload_service import UploadService, UPLOAD_DIRS
 from app.services.qr_service import QRService
+from app.utils import (
+    get_or_404, raise_not_found, raise_forbidden, raise_bad_request,
+    check_vehicle_ownership, validate_unique_vehicle_registration
+)
 
 router = APIRouter(prefix="/api/vehicles", tags=["Vehicles"])
 
@@ -24,15 +29,7 @@ async def create_vehicle(
     Create a new vehicle (for vehicle owners)
     """
     # Check if vehicle with same registration already exists
-    existing = db.exec(
-        select(Vehicle).where(Vehicle.registration_number == vehicle_data.registration_number)
-    ).first()
-    
-    if existing:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Vehicle with this registration number already exists"
-        )
+    validate_unique_vehicle_registration(db, vehicle_data.registration_number)
     
     # Create vehicle with authenticated user as owner
     vehicle = Vehicle(**vehicle_data.dict(), owner_id=current_user.id)
@@ -50,6 +47,53 @@ async def create_vehicle(
     db.refresh(vehicle)
     
     return vehicle
+
+@router.get("/search", response_model=List[Vehicle])
+async def search_vehicles(
+    query: str = Query(..., description="Search by registration number, VIN, or vehicle ID"),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+    limit: int = 10
+):
+    """
+    Search vehicles by registration number, VIN, or ID
+    For mechanics: Only return vehicles they have access to
+    For owners: Return only their vehicles
+    For admins: Return all matching vehicles
+    """
+    if not query.strip():
+        return []
+    
+    # Base search query
+    search_query = select(Vehicle).where(
+        or_(
+            Vehicle.registration_number.ilike(f"%{query}%"),
+            Vehicle.vin.ilike(f"%{query}%"),
+            Vehicle.id == int(query) if query.isdigit() else False
+        )
+    ).limit(limit)
+    
+    # Apply role-based filtering
+    if current_user.role == "owner":
+        # Owners can only see their own vehicles
+        search_query = search_query.where(Vehicle.owner_id == current_user.id)
+    elif current_user.role == "mechanic":
+        # Mechanics can only see vehicles they have approved access to
+        accessible_vehicle_ids = db.exec(
+            select(VehicleAccessRequest.vehicle_id).where(
+                VehicleAccessRequest.mechanic_id == current_user.id,
+                VehicleAccessRequest.status == AccessStatus.APPROVED
+            )
+        ).all()
+        
+        if not accessible_vehicle_ids:
+            return []
+        
+        search_query = search_query.where(Vehicle.id.in_(accessible_vehicle_ids))
+    # Admins see all vehicles (no additional filtering)
+    
+    vehicles = db.exec(search_query).all()
+    return vehicles
 
 @router.get("/my-vehicles", response_model=List[Vehicle])
 async def get_my_vehicles(
@@ -90,20 +134,8 @@ async def get_vehicle(
     """
     Get specific vehicle by ID
     """
-    vehicle = db.get(Vehicle, vehicle_id)
-    
-    if not vehicle:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Vehicle not found"
-        )
-    
-    # Check if user owns this vehicle or is admin/mechanic
-    if vehicle.owner_id != current_user.id and current_user.role not in ["admin", "mechanic"]:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You don't have permission to access this vehicle"
-        )
+    vehicle = get_or_404(db, Vehicle, vehicle_id, "Vehicle")
+    check_vehicle_ownership(current_user, vehicle)
     
     return vehicle
 
@@ -121,17 +153,10 @@ async def get_vehicle_by_registration(
     ).first()
     
     if not vehicle:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Vehicle not found"
-        )
+        raise_not_found("Vehicle")
     
     # Check permissions
-    if vehicle.owner_id != current_user.id and current_user.role not in ["admin", "mechanic"]:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You don't have permission to access this vehicle"
-        )
+    check_vehicle_ownership(current_user, vehicle)
     
     return vehicle
 
@@ -145,20 +170,8 @@ async def update_vehicle(
     """
     Update vehicle details
     """
-    vehicle = db.get(Vehicle, vehicle_id)
-    
-    if not vehicle:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Vehicle not found"
-        )
-    
-    # Check ownership
-    if vehicle.owner_id != current_user.id and current_user.role not in ["admin", "mechanic"]:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You don't have permission to update this vehicle"
-        )
+    vehicle = get_or_404(db, Vehicle, vehicle_id, "Vehicle")
+    check_vehicle_ownership(current_user, vehicle)
     
     # Update fields
     update_data = vehicle_update.dict(exclude_unset=True)
@@ -181,20 +194,11 @@ async def delete_vehicle(
     """
     Delete a vehicle (soft delete - just mark as inactive)
     """
-    vehicle = db.get(Vehicle, vehicle_id)
-    
-    if not vehicle:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Vehicle not found"
-        )
+    vehicle = get_or_404(db, Vehicle, vehicle_id, "Vehicle")
     
     # Check ownership
     if vehicle.owner_id != current_user.id and current_user.role != "admin":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You don't have permission to delete this vehicle"
-        )
+        raise_forbidden("You don't have permission to delete this vehicle")
     
     # For now, just delete (later we can implement soft delete)
     db.delete(vehicle)
@@ -308,20 +312,8 @@ async def get_vehicle_photos(
     Get all photos for a vehicle
     """
     # Get vehicle
-    vehicle = db.get(Vehicle, vehicle_id)
-    
-    if not vehicle:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Vehicle not found"
-        )
-    
-    # Check ownership
-    if vehicle.owner_id != current_user.id and current_user.role not in ["admin", "mechanic"]:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You don't have permission to view photos for this vehicle"
-        )
+    vehicle = get_or_404(db, Vehicle, vehicle_id, "Vehicle")
+    check_vehicle_ownership(current_user, vehicle)
     
     photos = db.exec(
         select(VehiclePhoto)
@@ -340,20 +332,8 @@ async def get_vehicle_qr(
     """
     Get vehicle QR code (regenerate if missing)
     """
-    vehicle = db.get(Vehicle, vehicle_id)
-    
-    if not vehicle:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Vehicle not found"
-        )
-    
-    # Check ownership
-    if vehicle.owner_id != current_user.id and current_user.role not in ["admin", "mechanic"]:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You don't have permission to access this vehicle's QR code"
-        )
+    vehicle = get_or_404(db, Vehicle, vehicle_id, "Vehicle")
+    check_vehicle_ownership(current_user, vehicle)
     
     # Generate QR if not exists
     if not vehicle.qr_code_url or not os.path.exists(vehicle.qr_code_url.replace("/uploads/", "app/uploads/")):
@@ -385,20 +365,7 @@ async def scan_vehicle_qr(
             detail="Invalid QR code"
         )
     
-    vehicle = db.get(Vehicle, parsed["vehicle_id"])
-    
-    if not vehicle:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Vehicle not found"
-        )
-    
-    # Mechanics and admins can scan any vehicle
-    # Owners can only scan their own vehicles
-    if vehicle.owner_id != current_user.id and current_user.role not in ["admin", "mechanic"]:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You don't have permission to access this vehicle"
-        )
+    vehicle = get_or_404(db, Vehicle, parsed["vehicle_id"], "Vehicle")
+    check_vehicle_ownership(current_user, vehicle)
     
     return vehicle

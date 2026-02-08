@@ -15,6 +15,10 @@ from app.schemas.vehicle_access import (
     VehicleAccessRequestResponse,
     AccessibleVehicleResponse
 )
+from app.utils import (
+    require_mechanic, get_or_404, raise_bad_request, raise_forbidden,
+    enrich_access_request_response, enrich_access_requests_list
+)
 
 router = APIRouter(prefix="/api/vehicle-access", tags=["Vehicle Access"])
 
@@ -28,26 +32,14 @@ async def request_vehicle_access(
     Mechanic requests access to a customer's vehicle
     """
     # Only mechanics can request access
-    if current_user.role != "mechanic":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only mechanics can request vehicle access"
-        )
+    require_mechanic(current_user)
     
     # Check if vehicle exists
-    vehicle = db.get(Vehicle, request_data.vehicle_id)
-    if not vehicle:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Vehicle not found"
-        )
+    vehicle = get_or_404(db, Vehicle, request_data.vehicle_id, "Vehicle")
     
     # Can't request access to own vehicle
     if vehicle.owner_id == current_user.id:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="You cannot request access to your own vehicle"
-        )
+        raise_bad_request("You cannot request access to your own vehicle")
     
     # Check if request already exists
     existing_request = db.exec(
@@ -65,15 +57,9 @@ async def request_vehicle_access(
     
     if existing_request:
         if existing_request.status == AccessStatus.APPROVED:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="You already have access to this vehicle"
-            )
+            raise_bad_request("You already have access to this vehicle")
         else:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="You already have a pending request for this vehicle"
-            )
+            raise_bad_request("You already have a pending request for this vehicle")
     
     # Create new request
     access_request = VehicleAccessRequest(
@@ -89,14 +75,7 @@ async def request_vehicle_access(
     db.refresh(access_request)
     
     # Add mechanic and vehicle info for response
-    response = VehicleAccessRequestResponse.model_validate(access_request)
-    response.mechanic_name = current_user.full_name
-    response.mechanic_phone = current_user.phone
-    response.vehicle_registration = vehicle.registration_number
-    response.vehicle_make = vehicle.make
-    response.vehicle_model = vehicle.model
-    
-    return response
+    return enrich_access_request_response(db, access_request)
 
 @router.get("/requests/pending", response_model=List[VehicleAccessRequestResponse])
 async def get_pending_requests(
@@ -117,23 +96,7 @@ async def get_pending_requests(
     ).all()
     
     # Enrich with mechanic and vehicle info
-    response_list = []
-    for req in requests:
-        mechanic = db.get(User, req.mechanic_id)
-        vehicle = db.get(Vehicle, req.vehicle_id)
-        
-        response = VehicleAccessRequestResponse.model_validate(req)
-        if mechanic:
-            response.mechanic_name = mechanic.full_name
-            response.mechanic_phone = mechanic.phone
-        if vehicle:
-            response.vehicle_registration = vehicle.registration_number
-            response.vehicle_make = vehicle.make
-            response.vehicle_model = vehicle.model
-        
-        response_list.append(response)
-    
-    return response_list
+    return enrich_access_requests_list(db, requests)
 
 @router.get("/requests/all", response_model=List[VehicleAccessRequestResponse])
 async def get_all_requests(
@@ -150,23 +113,7 @@ async def get_all_requests(
     ).all()
     
     # Enrich with mechanic and vehicle info
-    response_list = []
-    for req in requests:
-        mechanic = db.get(User, req.mechanic_id)
-        vehicle = db.get(Vehicle, req.vehicle_id)
-        
-        response = VehicleAccessRequestResponse.model_validate(req)
-        if mechanic:
-            response.mechanic_name = mechanic.full_name
-            response.mechanic_phone = mechanic.phone
-        if vehicle:
-            response.vehicle_registration = vehicle.registration_number
-            response.vehicle_make = vehicle.make
-            response.vehicle_model = vehicle.model
-        
-        response_list.append(response)
-    
-    return response_list
+    return enrich_access_requests_list(db, requests)
 
 @router.put("/requests/{request_id}/approve", response_model=VehicleAccessRequestResponse)
 async def approve_access_request(
@@ -177,27 +124,15 @@ async def approve_access_request(
     """
     Approve a mechanic's access request
     """
-    access_request = db.get(VehicleAccessRequest, request_id)
-    
-    if not access_request:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Access request not found"
-        )
+    access_request = get_or_404(db, VehicleAccessRequest, request_id, "Access request")
     
     # Only vehicle owner can approve
     if access_request.owner_id != current_user.id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You can only approve requests for your own vehicles"
-        )
+        raise_forbidden("You can only approve requests for your own vehicles")
     
     # Can only approve pending requests
     if access_request.status != AccessStatus.PENDING:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Cannot approve request with status: {access_request.status}"
-        )
+        raise_bad_request(f"Cannot approve request with status: {access_request.status}")
     
     # Update status
     access_request.status = AccessStatus.APPROVED
@@ -208,20 +143,11 @@ async def approve_access_request(
     db.commit()
     db.refresh(access_request)
     
-    # Add mechanic and vehicle info
-    mechanic = db.get(User, access_request.mechanic_id)
-    vehicle = db.get(Vehicle, access_request.vehicle_id)
+    # TODO: Send confirmation notification to mechanic
+    # This could be implemented with a notification service in the future
+    # For now, we log the approval which can be checked by the mechanic through API
     
-    response = VehicleAccessRequestResponse.model_validate(access_request)
-    if mechanic:
-        response.mechanic_name = mechanic.full_name
-        response.mechanic_phone = mechanic.phone
-    if vehicle:
-        response.vehicle_registration = vehicle.registration_number
-        response.vehicle_make = vehicle.make
-        response.vehicle_model = vehicle.model
-    
-    return response
+    return enrich_access_request_response(db, access_request)
 
 @router.put("/requests/{request_id}/reject", response_model=VehicleAccessRequestResponse)
 async def reject_access_request(
@@ -232,27 +158,15 @@ async def reject_access_request(
     """
     Reject a mechanic's access request
     """
-    access_request = db.get(VehicleAccessRequest, request_id)
-    
-    if not access_request:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Access request not found"
-        )
+    access_request = get_or_404(db, VehicleAccessRequest, request_id, "Access request")
     
     # Only vehicle owner can reject
     if access_request.owner_id != current_user.id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You can only reject requests for your own vehicles"
-        )
+        raise_forbidden("You can only reject requests for your own vehicles")
     
     # Can only reject pending requests
     if access_request.status != AccessStatus.PENDING:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Cannot reject request with status: {access_request.status}"
-        )
+        raise_bad_request(f"Cannot reject request with status: {access_request.status}")
     
     # Update status
     access_request.status = AccessStatus.REJECTED
@@ -262,14 +176,7 @@ async def reject_access_request(
     db.commit()
     db.refresh(access_request)
     
-    # Add mechanic and vehicle info
-    mechanic = db.get(User, access_request.mechanic_id)
-    vehicle = db.get(Vehicle, access_request.vehicle_id)
-    
-    response = VehicleAccessRequestResponse.model_validate(access_request)
-    if mechanic:
-        response.mechanic_name = mechanic.full_name
-        response.mechanic_phone = mechanic.phone
+    return enrich_access_request_response(db, access_request)
     if vehicle:
         response.vehicle_registration = vehicle.registration_number
         response.vehicle_make = vehicle.make
@@ -288,18 +195,10 @@ async def revoke_vehicle_access(
     Revoke a mechanic's access to a vehicle
     """
     # Check vehicle ownership
-    vehicle = db.get(Vehicle, vehicle_id)
-    if not vehicle:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Vehicle not found"
-        )
+    vehicle = get_or_404(db, Vehicle, vehicle_id, "Vehicle")
     
     if vehicle.owner_id != current_user.id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You can only revoke access for your own vehicles"
-        )
+        raise_forbidden("You can only revoke access for your own vehicles")
     
     # Find approved access request
     access_request = db.exec(
@@ -313,10 +212,7 @@ async def revoke_vehicle_access(
     ).first()
     
     if not access_request:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="No approved access found for this mechanic"
-        )
+        raise_not_found("No approved access found for this mechanic")
     
     # Update to rejected (effectively revoking access)
     access_request.status = AccessStatus.REJECTED
@@ -336,11 +232,7 @@ async def get_accessible_vehicles(
     Get all vehicles that the current mechanic has access to
     """
     # Only mechanics can access this endpoint
-    if current_user.role != "mechanic":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only mechanics can view accessible vehicles"
-        )
+    require_mechanic(current_user)
     
     # Get all approved access requests for this mechanic
     approved_requests = db.exec(
@@ -387,12 +279,7 @@ async def check_vehicle_access(
     """
     Check if current user has access to a specific vehicle
     """
-    vehicle = db.get(Vehicle, vehicle_id)
-    if not vehicle:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Vehicle not found"
-        )
+    vehicle = get_or_404(db, Vehicle, vehicle_id, "Vehicle")
     
     # Owner always has access
     if vehicle.owner_id == current_user.id:

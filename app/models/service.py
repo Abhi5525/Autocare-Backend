@@ -41,6 +41,12 @@ class ServiceRecordCreate(SQLModel):
     cost_estimate: Optional[float] = None
     service_date: Optional[date] = None
     mechanic_id: Optional[int] = None
+    odometer_reading: Optional[int] = None
+    # Additional fields for manual entry
+    parts_replaced: Optional[List[str]] = None
+    labor_cost: Optional[float] = None
+    parts_cost: Optional[float] = None
+    notes: Optional[str] = None
 
 class ServiceRecordUpdate(SQLModel):
     service_type: Optional[ServiceType] = None
@@ -52,6 +58,7 @@ class ServiceRecordUpdate(SQLModel):
     status: Optional[ServiceStatus] = None
     service_date: Optional[date] = None
     completion_date: Optional[date] = None
+    odometer_reading: Optional[int] = None
 
 # ===== DB Model =====
 class ServiceRecord(SQLModel, table=True):
@@ -70,6 +77,7 @@ class ServiceRecord(SQLModel, table=True):
     
     service_date: Optional[date] = None
     completion_date: Optional[date] = None
+    odometer_reading: Optional[int] = None
     
     # Voice processing fields
     voice_transcript: Optional[str] = None

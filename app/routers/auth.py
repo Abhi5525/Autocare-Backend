@@ -14,6 +14,11 @@ from app.core.database import get_session
 from app.core.security import verify_password, get_password_hash, create_access_token
 from app.models.user import User, UserCreate, UserLogin, Token, TokenWithUser, UserUpdate
 from app.dependencies.deps import get_current_user
+from app.utils import (
+    require_admin, validate_password_strength,
+    validate_unique_user_credentials, validate_mechanic_credentials,
+    raise_bad_request, get_or_404
+)
 
 router = APIRouter(prefix="/api/auth", tags=["Authentication"])
 
@@ -27,48 +32,21 @@ async def register(
     Mechanics require admin approval before they can use the system.
     """
     # Check email and phone uniqueness
-    existing_user = db.query(User).filter(
-        (User.email == user_data.email) | (User.phone == user_data.phone)
-    ).first()
-    
-    if existing_user:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Email or phone already registered"
-        )
+    validate_unique_user_credentials(db, user_data.email, user_data.phone)
     
     # Validate mechanic-specific fields
     if user_data.role == "mechanic":
         if not all([user_data.citizen_number, user_data.garage_registration, 
                    user_data.pan_number, user_data.garage_address]):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Mechanics must provide citizen number, garage registration, PAN number, and garage address"
-            )
+            raise_bad_request("Mechanics must provide citizen number, garage registration, PAN number, and garage address")
         
         # Check for duplicate mechanic credentials
-        duplicate_mechanic = db.query(User).filter(
-            (User.citizen_number == user_data.citizen_number) |
-            (User.garage_registration == user_data.garage_registration) |
-            (User.pan_number == user_data.pan_number)
-        ).first()
-        
-        if duplicate_mechanic:
-            if duplicate_mechanic.citizen_number == user_data.citizen_number:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="This citizen number is already registered"
-                )
-            elif duplicate_mechanic.garage_registration == user_data.garage_registration:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="This garage registration number is already registered"
-                )
-            elif duplicate_mechanic.pan_number == user_data.pan_number:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="This PAN number is already registered"
-                )
+        validate_mechanic_credentials(
+            db,
+            user_data.citizen_number,
+            user_data.garage_registration,
+            user_data.pan_number
+        )
     
     hashed_password = get_password_hash(user_data.password)
 
@@ -90,6 +68,7 @@ async def register(
         garage_registration=user_data.garage_registration,
         pan_number=user_data.pan_number,
         garage_address=user_data.garage_address,
+        workshop_name=user_data.workshop_name,  # Optional workshop/service center name
         # Mechanics start as active but need admin approval
         is_active=True,  # Always true so mechanics show as "Pending" not "Rejected"
         is_approved=True if user_data.role != "mechanic" else False  # Only mechanics need approval
@@ -142,7 +121,7 @@ async def login(
     if user.role == "mechanic" and not user.is_approved:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Your mechanic account is pending admin approval"
+            detail="Your mechanic account is under review and will be activated within 24 hours. Please check back later or contact support if you need immediate assistance."
         )
     
     access_token = create_access_token(data={"user_id": user.id, "role": user.role})
@@ -187,7 +166,7 @@ async def login_json(
     if user.role == "mechanic" and not user.is_approved:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Your mechanic account is pending admin approval"
+            detail="Your mechanic account is under review and will be activated within 24 hours. Please check back later or contact support if you need immediate assistance."
         )
     
     access_token = create_access_token(data={"user_id": user.id, "role": user.role})
@@ -311,11 +290,7 @@ async def get_pending_mechanics(
     db: Session = Depends(get_session)
 ):
     """Get all pending mechanic registrations (admin only)"""
-    if current_user.role != "admin":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only admins can access this endpoint"
-        )
+    require_admin(current_user)
     
     pending_mechanics = db.query(User).filter(
         User.role == "mechanic",
@@ -331,18 +306,9 @@ async def approve_mechanic(
     db: Session = Depends(get_session)
 ):
     """Approve a mechanic registration (admin only)"""
-    if current_user.role != "admin":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only admins can approve mechanics"
-        )
+    require_admin(current_user)
     
-    mechanic = db.query(User).filter(User.id == mechanic_id).first()
-    if not mechanic:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Mechanic not found"
-        )
+    mechanic = get_or_404(db, User, mechanic_id, "Mechanic")
     
     if mechanic.role != "mechanic":
         raise HTTPException(
@@ -370,11 +336,7 @@ async def reject_mechanic(
     comments: Optional[str] = None
 ):
     """Reject a mechanic registration (admin only)"""
-    if current_user.role != "admin":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only admins can reject mechanics"
-        )
+    require_admin(current_user)
     
     mechanic = db.query(User).filter(User.id == mechanic_id).first()
     if not mechanic:
@@ -402,11 +364,7 @@ async def get_admin_statistics(
     db: Session = Depends(get_session)
 ):
     """Get comprehensive system statistics (admin only)"""
-    if current_user.role != "admin":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only admins can access statistics"
-        )
+    require_admin(current_user)
     
     # Count users by role
     total_users = db.query(User).count()
@@ -445,11 +403,7 @@ async def get_all_mechanics(
     filter_status: Optional[str] = None
 ):
     """Get all mechanics with optional status filter (admin only)"""
-    if current_user.role != "admin":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only admins can access this endpoint"
-        )
+    require_admin(current_user)
     
     query = db.query(User).filter(User.role == "mechanic")
     
@@ -470,11 +424,7 @@ async def get_mechanic_details(
     db: Session = Depends(get_session)
 ):
     """Get detailed mechanic information (admin only)"""
-    if current_user.role != "admin":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only admins can access mechanic details"
-        )
+    require_admin(current_user)
     
     mechanic = db.query(User).filter(User.id == mechanic_id, User.role == "mechanic").first()
     if not mechanic:
@@ -494,11 +444,7 @@ async def get_all_users(
     limit: int = 100
 ):
     """Get all users with optional role filter (admin only)"""
-    if current_user.role != "admin":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only admins can access all users"
-        )
+    require_admin(current_user)
     
     query = db.query(User)
     
@@ -515,11 +461,7 @@ async def delete_user(
     db: Session = Depends(get_session)
 ):
     """Delete a user (admin only)"""
-    if current_user.role != "admin":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only admins can delete users"
-        )
+    require_admin(current_user)
     
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
@@ -548,11 +490,7 @@ async def get_all_vehicles_admin(
     limit: int = 100
 ):
     """Get all vehicles with comprehensive information (admin only)"""
-    if current_user.role != "admin":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only admins can access all vehicles"
-        )
+    require_admin(current_user)
     
     from app.models.vehicle import Vehicle
     
@@ -625,11 +563,7 @@ async def get_vehicle_details_admin(
     db: Session = Depends(get_session)
 ):
     """Get detailed vehicle information with service history (admin only)"""
-    if current_user.role != "admin":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only admins can access vehicle details"
-        )
+    require_admin(current_user)
     
     from app.models.vehicle import Vehicle
     from app.models.service import ServiceRecord
@@ -715,11 +649,7 @@ async def get_vehicle_statistics(
     db: Session = Depends(get_session)
 ):
     """Get comprehensive vehicle statistics (admin only)"""
-    if current_user.role != "admin":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only admins can access vehicle statistics"
-        )
+    require_admin(current_user)
     
     from app.models.vehicle import Vehicle
     from sqlmodel import func
@@ -782,11 +712,7 @@ async def get_enhanced_admin_statistics(
     db: Session = Depends(get_session)
 ):
     """Get comprehensive admin statistics with analytics (admin only)"""
-    if current_user.role != "admin":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only admins can access statistics"
-        )
+    require_admin(current_user)
     
     from app.models.vehicle import Vehicle
     from app.models.service import ServiceRecord

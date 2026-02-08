@@ -53,6 +53,7 @@ class ServiceRecordResponse(BaseModel):
     voice_transcript: Optional[str] = None
     ai_parsed_data: Optional[str] = None
     confidence_score: Optional[float] = None
+    odometer_reading: Optional[int] = None
     created_at: datetime
     updated_at: datetime
     approved_at: Optional[datetime] = None

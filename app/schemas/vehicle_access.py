@@ -28,6 +28,7 @@ class VehicleAccessRequestResponse(BaseModel):
     # Additional info for frontend
     mechanic_name: Optional[str] = None
     mechanic_phone: Optional[str] = None
+    workshop_name: Optional[str] = None  # Workshop/Service center name
     vehicle_registration: Optional[str] = None
     vehicle_make: Optional[str] = None
     vehicle_model: Optional[str] = None

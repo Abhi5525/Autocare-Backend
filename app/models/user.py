@@ -39,6 +39,7 @@ class UserCreate(UserBase):
     garage_registration: Optional[str] = None
     pan_number: Optional[str] = None
     garage_address: Optional[str] = None
+    workshop_name: Optional[str] = None  # Optional workshop/service center name
 
 class UserUpdate(SQLModel):
     """For updating user profile"""
@@ -52,6 +53,7 @@ class UserUpdate(SQLModel):
     municipality: Optional[str] = None
     ward_no: Optional[str] = None
     garage_address: Optional[str] = None
+    workshop_name: Optional[str] = None
 
 class UserLogin(SQLModel):
     """For login"""
@@ -102,6 +104,7 @@ class User(UserBase, table=True):
     pan_number: Optional[str] = Field(default=None, unique=True, index=True)  # PAN number for tax
     mechanic_certificate_url: Optional[str] = None  # Photo/certificate upload
     garage_address: Optional[str] = None  # Garage location
+    workshop_name: Optional[str] = None  # Service center/workshop name (optional)
     is_approved: bool = False  # Admin approval for mechanics
     approved_by: Optional[int] = None  # Admin who approved
     approved_at: Optional[datetime] = None  # When approved
